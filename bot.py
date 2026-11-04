@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MovieVerse Bot — Updated 17-Char Alphanumeric Code
+MovieVerse Bot — Fixed Port Binding, Non-Blocking Async Web Server & AI Agent Integration
 """
 
 import asyncio
@@ -32,19 +32,23 @@ from aiogram.exceptions import (
     TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter,
 )
 
+# ⭐ Import for web server port binding on Render
+from aiohttp import web
+
 # =========================================================================
 # CONFIG
 # =========================================================================
 BOT_TOKEN = os.environ.get(
     "BOT_TOKEN",
-    "8751100050:AAF4Vunr7OT-H0WZySy4p6UH16Cyt693gsI",  # ⚠ REVOKE THIS
+    "8999148581:AAExMi5DcfVS06RzED5R0qhRJPWKknczotA",
 )
 ADMIN_CHAT_ID = int(os.environ.get("ADMIN_CHAT_ID", "7718164345"))
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AQ.Ab8RN6Kr1UWVlIt9IWGVPApYoAQMXGud_GN87KmsD_nJNLAtPA")
 
 DB_PATH = os.path.join(os.getcwd(), "movieverse.db")
 
 AUTO_DELETE_SECONDS = 1200
-BACKUP_INTERVAL_SECONDS = 60  # ⭐ 60 সেকেন্ড ব্যাকআপ
+BACKUP_INTERVAL_SECONDS = 60
 ANTI_SPAM_COOLDOWN = 1.0
 
 # ⭐ YOUR MINI APP DEEP LINK
@@ -176,7 +180,6 @@ def truncate(text: str, n: int = 40) -> str:
 def esc(text) -> str:
     return html.escape(str(text or ""))
 
-# ⭐ GENERATE 17-CHAR ALPHANUMERIC CODE (A-Z, a-z, 0-9)
 async def unique_code() -> str:
     chars = string.ascii_letters + string.digits
     while True:
@@ -396,7 +399,7 @@ def main_menu_kb(is_admin: bool = False) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📤 UPLOAD CONTENT", callback_data="user_upload")],
         [InlineKeyboardButton(text="👤 MY PROFILE", callback_data="profile"), InlineKeyboardButton(text="🔗 REFER & EARN", callback_data="referral")],
         [InlineKeyboardButton(text="💰 MY BALANCE", callback_data="balance"), InlineKeyboardButton(text="💸 WITHDRAW", callback_data="withdraw")],
-        [InlineKeyboardButton(text="🎬 BROWSE", callback_data="browse"), InlineKeyboardButton(text="🔍 SEARCH", callback_data="search_code")],
+        [InlineKeyboardButton(text="🎬 BROWSE", callback_data="browse"), InlineKeyboardButton(text="🔍 SEARCH AI AGENT", callback_data="search_code")],
         [InlineKeyboardButton(text="📁 MY UPLOADS", callback_data="my_uploads"), InlineKeyboardButton(text="🏆 LEADERBOARD", callback_data="leaderboard")],
         [InlineKeyboardButton(text="🎁 DAILY BONUS", callback_data="daily_bonus"), InlineKeyboardButton(text="ℹ️ HELP", callback_data="help")],
     ]
@@ -504,7 +507,7 @@ async def cmd_start(message: Message, state: FSMContext):
 
     miss = await missing_channels(uid)
     if miss:
-        await message.answer("👋 <b>WELCOME TO MOVIEVERSE!</b>\n\nTo continue, please join <b>ALL</b> our channels:", reply_markup=join_kb(miss))
+        await message.answer("👋 <b>WELCOME TO MOVIEVERSE AI BOT!</b>\n\nTo continue, please join <b>ALL</b> our channels:", reply_markup=join_kb(miss))
         return
 
     if payload and payload.startswith("GET_"):
@@ -512,7 +515,7 @@ async def cmd_start(message: Message, state: FSMContext):
         return
 
     await message.answer(
-        "🏠 <b>WELCOME TO MOVIEVERSE!</b>\n\n🎬 Watch content, earn rewards.\n💸 $0.0001 per view, $0.025 per referral.",
+        "🏠 <b>WELCOME TO MOVIEVERSE AI BOT!</b>\n\n🎬 Search anime, movies & series using AI Agent.\n💸 $0.0001 per view, $0.025 per referral.",
         reply_markup=main_menu_kb(uid == ADMIN_CHAT_ID))
 
 @router.callback_query(F.data == "check_join")
@@ -533,7 +536,7 @@ async def cb_main(call: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "help")
 async def cb_help(call: CallbackQuery):
-    await safe_edit(call, "ℹ️ <b>HELP</b>\n\n🎬 <b>Browse:</b> Find content by category\n🔍 <b>Search:</b> Search by code or title\n📥 <b>Unlock:</b> Watch ad to unlock files\n📤 <b>Upload:</b> Share privately with code\n🔗 <b>Refer:</b> Earn $0.025 per friend\n🎁 <b>Daily:</b> Claim bonus every 24h\n💸 <b>Withdraw:</b> Min $10 via Binance/USDT", reply_markup=back_kb("main"))
+    await safe_edit(call, "ℹ️ <b>HELP & AI AGENT GUIDE</b>\n\n🎬 <b>Search AI Agent:</b> Send keywords like 'Naruto season 1 episode 32' or 'Demon Slayer' to find content instantly.\n📥 <b>Unlock:</b> Watch ad to unlock files.\n📤 <b>Upload:</b> Share privately with code.\n🔗 <b>Refer:</b> Earn $0.025 per friend.", reply_markup=back_kb("main"))
 
 # =========================================================================
 # PROFILE / BALANCE / REFERRAL / DAILY / LEADERBOARD
@@ -562,7 +565,6 @@ async def _show_profile(chat_id, user_id, edit_call=None):
     codes_txt = ""
     if posts:
         codes_txt = "\n📄 <b>YOUR CONTENT:</b>\n"
-        # ⭐ We show the title and views, but NOT the code
         for p in posts[:10]:
             codes_txt += f"  {esc(truncate(p['title'], 30))} — 👁 {p.get('views', 0)}\n"
     else:
@@ -674,7 +676,7 @@ async def cb_leaderboard(call: CallbackQuery):
     await safe_edit(call, text, reply_markup=back_kb("main"))
 
 # =========================================================================
-# BROWSE / CATEGORY / SEARCH
+# BROWSE / CATEGORY / AI AGENT SEARCH
 # =========================================================================
 @router.callback_query(F.data == "browse")
 async def cb_browse(call: CallbackQuery):
@@ -693,7 +695,6 @@ async def cb_category(call: CallbackQuery):
     if not posts:
         await call.answer("No posts yet.", show_alert=True)
         return
-    # ⭐ Title only, no code
     kb = [[InlineKeyboardButton(text=f"🎬 {truncate(p['title'], 40)}", callback_data=f"view:{p['code']}")] for p in posts]
     kb.append([InlineKeyboardButton(text="🔙 BACK", callback_data="browse")])
     await safe_edit(call, f"{CATEGORY_NAMES[cat]} — <b>LATEST POSTS</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
@@ -701,27 +702,49 @@ async def cb_category(call: CallbackQuery):
 @router.callback_query(F.data == "search_code")
 async def cb_search(call: CallbackQuery, state: FSMContext):
     await state.set_state(UserStates.waiting_search)
-    await safe_edit(call, "🔍 <b>SEARCH</b>\n\nSend a title keyword to search:", reply_markup=back_kb("main"))
+    await safe_edit(call, "🤖 <b>AI AGENT SEARCH</b>\n\nSend a title keyword (e.g. <i>Naruto season 1 episode 32</i> or <i>Demon Slayer</i>):", reply_markup=back_kb("main"))
 
 @router.message(UserStates.waiting_search)
-async def search_handler(message: Message, state: FSMContext):
+async def ai_agent_search_handler(message: Message, state: FSMContext):
     q = (message.text or "").strip()
     await state.clear()
     if not q:
-        await message.answer("Send a valid query.", reply_markup=back_kb("main"))
+        await message.answer("⚠️ Please send a valid search query.", reply_markup=back_kb("main"))
         return
-    # ⭐ Only search by title now
+
+    # AI Agent query processing simulation & Database match
     rows = await fetchall("SELECT * FROM posts WHERE published=1 AND deleted=0 AND title LIKE ? ORDER BY created_at DESC LIMIT 20", (f"%{q}%",))
+    
+    # If exact query returns nothing, try splitting keywords for AI smart match
     if not rows:
-        await message.answer("❌ No results.", reply_markup=back_kb("main"))
+        keywords = q.split()
+        if len(keywords) > 1:
+            query_parts = " OR ".join(["title LIKE ?" for _ in keywords])
+            params = tuple([f"%{kw}%" for kw in keywords])
+            rows = await fetchall(f"SELECT * FROM posts WHERE published=1 AND deleted=0 AND ({query_parts}) ORDER BY created_at DESC LIMIT 15", params)
+
+    if not rows:
+        await message.answer(
+            f"🤖 <b>AI Agent Response:</b>\n\n❌ Sorry, I couldn't find any content matching <b>'{esc(q)}'</b> right now. It might not be uploaded yet or check your spelling!",
+            reply_markup=back_kb("main")
+        )
         return
-    text = f"🔍 <b>RESULTS FOR:</b> <i>{esc(q)}</i>\n\n"
+
+    username = await get_bot_username()
+    text = f"🤖 <b>AI Agent Search Results for:</b> <i>{esc(q)}</i>\n\n"
     kb = []
+    
     for p in rows:
-        text += f"🎬 {esc(truncate(p['title'], 40))}\n"
-        kb.append([InlineKeyboardButton(text=f"🎬 {truncate(p['title'], 35)}", callback_data=f"view:{p['code']}")])
+        title = p['title']
+        cat = p.get('category', 'movie')
+        ch = CATEGORY_CHANNELS.get(cat, MAIN_CHANNEL)
+        post_link = f"https://t.me/{username}?start=GET_{p['code']}"
+        
+        text += f"🎬 <b>{esc(title)}</b>\n📢 Channel: {ch}\n🔗 Get Link: {post_link}\n\n"
+        kb.append([InlineKeyboardButton(text=f"🎬 {truncate(title, 35)}", callback_data=f"view:{p['code']}")])
+
     kb.append([InlineKeyboardButton(text="🏠 MAIN MENU", callback_data="main")])
-    await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), disable_web_page_preview=True)
 
 # =========================================================================
 # POST CARD
@@ -731,7 +754,6 @@ async def show_post_card(chat_id: int, code: str):
     if not post:
         await bot.send_message(chat_id, "⚠️ Post not found.")
         return
-    # ⭐ DO NOT SHOW CODE HERE
     text = f"🎬 <b>{esc(post['title'])}</b>\n\n👇 Watch the ad to unlock:"
     kb = post_card_kb(code)
     if post.get("thumbnail_id"):
@@ -762,7 +784,7 @@ async def cb_star(call: CallbackQuery):
     else: await call.answer("❌ Failed to save rating.", show_alert=True)
 
 # =========================================================================
-# ⭐ MINI APP CONFIRM & TEXT HANDLER
+# MINI APP CONFIRM & TEXT HANDLER
 # =========================================================================
 @router.message(F.web_app_data)
 async def handle_web_app_data(message: Message):
@@ -803,10 +825,8 @@ async def handle_web_app_data(message: Message):
     await asyncio.sleep(0.4)
     await _deliver(message.chat.id, code, message.from_user.id)
 
-# ⭐ This handles the 17-character code pasted by the user
 @router.message(F.text.regexp(r"^[A-Za-z0-9]{17}$"))
 async def handle_pasted_code(message: Message, state: FSMContext):
-    # Ignore if user is in another state (like uploading)
     current_state = await state.get_state()
     if current_state is not None:
         return
@@ -817,7 +837,6 @@ async def handle_pasted_code(message: Message, state: FSMContext):
         await message.answer("❌ Invalid code or video deleted.")
         return
     
-    # ⭐ DO NOT ECHO THE CODE BACK
     await message.answer("✅ <b>Code Verified!</b> Sending your file...")
     await _deliver(message.chat.id, code, message.from_user.id)
 
@@ -930,7 +949,6 @@ async def recv_user_thumb(message: Message, state: FSMContext):
     username = await get_bot_username()
     link = f"https://t.me/{username}?start=GET_{code}"
     await state.clear()
-    # ⭐ DO NOT SHOW THE CODE, only the link
     await message.answer(f"✅ <b>UPLOAD COMPLETE!</b>\n\n📌 Title: <b>{esc(title)}</b>\n🔗 Share: <code>{link}</code>", reply_markup=back_kb("main"))
 
 # =========================================================================
@@ -958,7 +976,6 @@ async def cb_myedit(call: CallbackQuery):
         [InlineKeyboardButton(text="🗑 DELETE", callback_data=f"mydel:{code}")],
         [InlineKeyboardButton(text="🔙 BACK", callback_data="my_uploads")],
     ])
-    # ⭐ DO NOT SHOW THE CODE
     await safe_edit(call, f"📄 <b>{esc(post['title'])}</b>\n👁 Views: {post['views']}", reply_markup=kb)
 
 @router.callback_query(F.data.startswith("mydel:"))
@@ -1193,7 +1210,6 @@ async def cb_pub_confirm(call: CallbackQuery, state: FSMContext):
             logger.error(f"publish {ch}: {e}")
             
     await state.clear()
-    # ⭐ DO NOT SHOW THE CODE, only the link
     await safe_edit(call, f"✅ <b>PUBLISHED!</b>\n\n🔗 Link: <code>{link}</code>\n\nPosted to: {', '.join(posted) if posted else '❌ none'}", reply_markup=back_kb("admin_panel"))
 
 @router.callback_query(F.data == "admin_restore", F.from_user.id == ADMIN_CHAT_ID)
@@ -1407,11 +1423,69 @@ async def backup_worker():
             await asyncio.sleep(5)
 
 # =========================================================================
-# FALLBACK
+# WEB SERVER FOR RENDER PORT BINDING (FIXED NON-BLOCKING)
+# =========================================================================
+async def handle_ping(request):
+    return web.Response(text="MovieVerse Bot is running!")
+
+async def start_web_server():
+    try:
+        app = web.Application()
+        app.router.add_get("/", handle_ping)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        
+        port = int(os.environ.get("PORT", 10000))
+        site = web.TCPSite(runner, "0.0.0.0", port)
+        await site.start()
+        logger.info(f"Web server started successfully and bound to port {port}")
+    except Exception as e:
+        logger.error(f"Web server error: {e}")
+
+# =========================================================================
+# FALLBACK / AI AGENT CHAT FALLBACK
 # =========================================================================
 @router.message()
-async def fallback(message: Message):
-    await message.answer("ℹ️ Use /start to see the main menu.", reply_markup=main_menu_kb(message.from_user.id == ADMIN_CHAT_ID))
+async def fallback(message: Message, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state is not None:
+        return
+    
+    # AI Agent Assistant fallback for natural language searches
+    q = (message.text or "").strip()
+    if not q or q.startswith("/"):
+        await message.answer("ℹ️ Use /start to see the main menu.", reply_markup=main_menu_kb(message.from_user.id == ADMIN_CHAT_ID))
+        return
+
+    # Trigger AI Agent Search automatically on text message
+    rows = await fetchall("SELECT * FROM posts WHERE published=1 AND deleted=0 AND title LIKE ? ORDER BY created_at DESC LIMIT 10", (f"%{q}%",))
+    if not rows:
+        keywords = q.split()
+        if len(keywords) > 1:
+            query_parts = " OR ".join(["title LIKE ?" for _ in keywords])
+            params = tuple([f"%{kw}%" for kw in keywords])
+            rows = await fetchall(f"SELECT * FROM posts WHERE published=1 AND deleted=0 AND ({query_parts}) ORDER BY created_at DESC LIMIT 10", params)
+
+    if not rows:
+        await message.answer(
+            f"🤖 <b>AI Agent Assistant:</b>\n\n❌ Sorry, I searched for <b>'{esc(q)}'</b> in our database, but no matching content is uploaded right now.",
+            reply_markup=main_menu_kb(message.from_user.id == ADMIN_CHAT_ID)
+        )
+        return
+
+    username = await get_bot_username()
+    text = f"🤖 <b>AI Agent Results for:</b> <i>{esc(q)}</i>\n\n"
+    kb = []
+    for p in rows:
+        title = p['title']
+        cat = p.get('category', 'movie')
+        ch = CATEGORY_CHANNELS.get(cat, MAIN_CHANNEL)
+        post_link = f"https://t.me/{username}?start=GET_{p['code']}"
+        text += f"🎬 <b>{esc(title)}</b>\n📢 Channel: {ch}\n🔗 Link: {post_link}\n\n"
+        kb.append([InlineKeyboardButton(text=f"🎬 {truncate(title, 35)}", callback_data=f"view:{p['code']}")] )
+
+    kb.append([InlineKeyboardButton(text="🏠 MAIN MENU", callback_data="main")])
+    await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), disable_web_page_preview=True)
 
 # =========================================================================
 # MAIN
@@ -1431,6 +1505,9 @@ async def main():
 
         global _backup_task
         _backup_task = asyncio.create_task(backup_worker())
+
+        # Non-blocking web server task creation
+        asyncio.create_task(start_web_server())
 
         me = await bot.get_me()
         logger.info(f"Logged in as @{me.username} (id={me.id})")
