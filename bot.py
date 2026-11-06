@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MovieVerse Bot — Updated: App Removed, Viral Folders Added, Auto-Delete & 24/7 Hosting
+MovieVerse Bot — Updated: App Removed, Viral Folders Added, Auto-Delete, Alternating Ads & 24/7 Hosting
 """
 
 import asyncio
@@ -49,7 +49,8 @@ AUTO_DELETE_SECONDS = 1200  # ২০ মিনিট পর মেসেজ ড�
 BACKUP_INTERVAL_SECONDS = 60
 ANTI_SPAM_COOLDOWN = 1.0
 
-MINI_APP_LINK_BASE = "https://t.me/MovieVerseBot99_bot/Nadim2400?startapp=GET_"
+# নতুন মিনি অ্যাপের ডিরেক্ট লিংক
+MINI_APP_LINK_BASE = "https://t.me/Nsyt83325bot_bot/httpsyhcff5t53tu6botblogspot?startapp=GET_"
 
 # অ্যাপ চ্যানেল বাদ দিয়ে বাকি ৩টি চ্যানেল কনফিগার করা হলো
 CATEGORY_CHANNELS = {
@@ -248,6 +249,7 @@ async def init_db() -> None:
         await db.execute("CREATE TABLE IF NOT EXISTS views (post_code TEXT, user_id INTEGER, created_at INTEGER, PRIMARY KEY (post_code, user_id))")
         await db.execute("CREATE TABLE IF NOT EXISTS ratings (post_code TEXT, user_id INTEGER, stars INTEGER, created_at INTEGER, PRIMARY KEY (post_code, user_id))")
         await db.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
+        await db.execute("CREATE TABLE IF NOT EXISTS user_post_clicks (user_id INTEGER, post_code TEXT, click_count INTEGER DEFAULT 0, PRIMARY KEY (user_id, post_code))")
         await db.execute("CREATE TABLE IF NOT EXISTS withdrawals (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, amount REAL, method TEXT, address TEXT, status TEXT DEFAULT 'pending', created_at INTEGER)")
 
         for k, v in {"min_withdraw": str(DEFAULT_MIN_WITHDRAW), "view_reward": str(VIEW_REWARD), "referral_bonus": str(REFERRAL_BONUS), "daily_bonus": str(DAILY_BONUS)}.items():
@@ -334,6 +336,19 @@ async def set_rating(code: str, user_id: int, stars: int) -> bool:
     except Exception as e:
         logger.error(f"set_rating: {e}")
         return False
+
+async def get_and_inc_click_count(user_id: int, post_code: str) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT click_count FROM user_post_clicks WHERE user_id=? AND post_code=?", (user_id, post_code))
+        row = await cur.fetchone()
+        if row:
+            count = row[0] + 1
+            await db.execute("UPDATE user_post_clicks SET click_count=? WHERE user_id=? AND post_code=?", (count, user_id, post_code))
+        else:
+            count = 1
+            await db.execute("INSERT INTO user_post_clicks (user_id, post_code, click_count) VALUES (?, ?, ?)", (user_id, post_code, count))
+        await db.commit()
+        return count
 
 async def get_bot_username() -> str:
     global BOT_USERNAME_CACHE
@@ -515,7 +530,16 @@ async def cmd_start(message: Message, state: FSMContext):
         return
 
     if payload and payload.startswith("GET_"):
-        await show_post_card(message.chat.id, payload[4:])
+        code = payload[4:]
+        count = await get_and_inc_click_count(uid, code)
+        if count % 2 != 0:
+            # বিজোড় বার (১ম, ৩য়, ৫ম...): ডাইরেক্ট ভিডিও ডেলিভারি
+            d_msg = await message.answer("⚡ <b>Direct Access Granted!</b> Sending your video...")
+            asyncio.create_task(_auto_delete(d_msg.chat.id, d_msg.message_id))
+            await _deliver(message.chat.id, code, uid)
+        else:
+            # জোড় বার (২য়, ৪র্থ, ৬ষ্ঠ...): ওয়াচ অ্যাড বাধ্যতামূলক
+            await show_post_card(message.chat.id, code)
         return
 
     await message.answer(
@@ -696,7 +720,6 @@ async def cb_browse(call: CallbackQuery):
 @router.callback_query(F.data.startswith("cat:"))
 async def cb_category(call: CallbackQuery):
     cat = call.data.split(":", 1)[1]
-    # এখন মুভি, অ্যানিমে ও ভাইরাল ভিডিও তিনটির জন্যই ভাষা ও ফোল্ডার সিস্টেম থাকবে
     if cat in ("movie", "anime", "viral"):
         kb = []
         for lang_code, lang_name in LANGUAGES.items():
@@ -1243,7 +1266,6 @@ async def admin_recv_thumb(message: Message, state: FSMContext):
     data = await state.get_data()
     cat = data.get("category")
 
-    # এখন Movie, Anime এবং Viral তিনটির জন্যই ল্যাঙ্গুয়েজ ও ফোল্ডার সিলেকশন থাকবে
     if cat in ("movie", "anime", "viral"):
         kb = []
         for lang_code, lang_name in LANGUAGES.items():
