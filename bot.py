@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MovieVerse Bot — Fixed Port Binding & Non-Blocking Async Web Server for Render
-With Advanced AI Cross-Lingual Search, Quick Suggestions, Language Filters,
-AI Smart Title Formatter, 12-Items Pagination, and Lifetime 5% Referral Commission.
+MovieVerse Bot — Updated with Hindi, Bangla, English Language Order & Pagination
 """
 
 import asyncio
@@ -16,7 +14,6 @@ import secrets
 import string
 import shutil
 import traceback
-import re
 from typing import Optional, Union
 
 import aiosqlite
@@ -35,7 +32,6 @@ from aiogram.exceptions import (
     TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter,
 )
 
-# ⭐ Import for web server port binding on Render
 from aiohttp import web
 
 # =========================================================================
@@ -46,7 +42,6 @@ BOT_TOKEN = os.environ.get(
     "8999148581:AAExMi5DcfVS06RzED5R0qhRJPWKknczotA",
 )
 ADMIN_CHAT_ID = int(os.environ.get("ADMIN_CHAT_ID", "7718164345"))
-AI_API_TOKEN = os.environ.get("AI_API_TOKEN", "AQ.Ab8RN6Ix0Nv54pKeOaq2O-tk8ZvP3NYMMDQ3kU_9evy1OvIWyw")
 
 DB_PATH = os.path.join(os.getcwd(), "movieverse.db")
 
@@ -54,12 +49,11 @@ AUTO_DELETE_SECONDS = 1200
 BACKUP_INTERVAL_SECONDS = 60
 ANTI_SPAM_COOLDOWN = 1.0
 
-# ⭐ YOUR MINI APP DEEP LINK
 MINI_APP_LINK_BASE = "https://t.me/MovieVerseBot99_bot/Nadim2400?startapp=GET_"
 
 CATEGORY_CHANNELS = {
     "movie": "@MovieVerseOfficial9",
-    "drama": "@DramaVerseHub99",
+    "viral": "@DramaVerseHub99",
     "anime": "@AnimaversalSeries",
     "app": "@AppVerseOfficial",
 }
@@ -67,7 +61,7 @@ MAIN_CHANNEL = "@MovieVerseCommunity"
 
 FORCE_CHANNELS = [
     ("@MovieVerseOfficial9", "Movie Channel"),
-    ("@DramaVerseHub99", "Drama Channel"),
+    ("@DramaVerseHub99", "Viral Video Channel"),
     ("@AnimaversalSeries", "Anime Channel"),
     ("@AppVerseOfficial", "App Channel"),
     ("@MovieVerseCommunity", "Main Community"),
@@ -75,31 +69,26 @@ FORCE_CHANNELS = [
 
 CATEGORY_NAMES = {
     "movie": "🎬 Movie",
-    "drama": "🎭 Drama",
+    "viral": "🔥 Viral Video",
     "anime": "🎌 Anime",
     "app": "📱 App",
     "private": "🔒 Private",
 }
 
+# নির্দিষ্ট ক্রমানুসারে ভাষা: প্রথমে হিন্দি, তারপর বাংলা, তারপর ইংলিশ
+LANGUAGES = {
+    "hindi": "🇮🇳 Hindi",
+    "bangla": "🇧🇩 Bangla",
+    "english": "🇺🇸 English",
+}
+
 VIEW_REWARD = 0.0001
 REFERRAL_BONUS = 0.025
-LIFETIME_REF_PERCENT = 0.05
 DEFAULT_MIN_WITHDRAW = 10.0
 DAILY_BONUS = 0.001
 MAX_USER_FILES = 5
 MAX_ADMIN_FILES = 100
-ITEMS_PER_PAGE = 12
-
-POPULAR_SUGGESTIONS = [
-    "Naruto Shippuden", "Boruto", "Attack on Titan", "Demon Slayer",
-    "Jujutsu Kaisen", "One Piece", "Dragon Ball Z", "Death Note",
-    "Tokyo Revengers", "Solo Leveling", "My Hero Academia", "Bleach"
-]
-
-SUPPORTED_LANGUAGES = [
-    ("English", "en"), ("Hindi", "hi"), ("Japanese", "ja"), 
-    ("Bengali", "bn"), ("Dual Audio", "dual")
-]
+ITEMS_PER_PAGE = 15  # প্রতি পেজে ১৫টি উপাদান শো হবে
 
 logging.basicConfig(
     level=logging.INFO,
@@ -130,6 +119,7 @@ class AdminStates(StatesGroup):
     waiting_restore_db = State()
     waiting_setting = State()
     waiting_broadcast = State()
+    waiting_folder_name = State()
 
 class UserStates(StatesGroup):
     uploading_files = State()
@@ -141,71 +131,6 @@ class WithdrawStates(StatesGroup):
     waiting_amount = State()
     waiting_method = State()
     waiting_address = State()
-
-# =========================================================================
-# AI SMART TITLE FORMATTER & CROSS-LINGUAL PHONETIC MAPPER
-# =========================================================================
-def normalize_search_query(q: str) -> str:
-    """Supports cross-lingual and phonetic/misspelled keyword translation mappings."""
-    if not q:
-        return ""
-    ql = q.lower().strip()
-    
-    # Map common Bengali/Hindi/misspelled keywords to international English titles for robust matching
-    mappings = {
-        "নারুতো": "naruto",
-        "নারত": "naruto",
-        "নারুটো": "naruto",
-        "বরুটো": "boruto",
-        "বোরুটো": "boruto",
-        "অ্যাটাক অন টাইটান": "attack on titan",
-        "ডেমো স্লেয়ার": "demon slayer",
-        "ওয়ান পিস": "one piece",
-        "ড্রেগন বল": "dragon ball",
-    }
-    for k, v in mappings.items():
-        if k in ql:
-            ql = ql.replace(k, v)
-    return ql
-
-def detect_language_tag(title: str) -> str:
-    t_lower = title.lower()
-    if any(k in t_lower for k in ["hindi", "dubbed", "হিন্দি", "हिन्दी"]):
-        return "hi"
-    if any(k in t_lower for k in ["bengali", "bangla", "বাংলা"]):
-        return "bn"
-    if any(k in t_lower for k in ["japanese", "jp", "sub"]):
-        return "ja"
-    if any(k in t_lower for k in ["dual", "multi"]):
-        return "dual"
-    return "en"
-
-def ai_format_title(raw_title: str) -> str:
-    if not raw_title:
-        return "Untitled"
-    
-    title = str(raw_title).strip()
-    
-    season_match = re.search(r'(?:season|সিজন)\s*(\d+)', title, re.IGNORECASE)
-    ep_match = re.search(r'(?:episode|ep|পর্ব|এপিসোড)\s*(\d+)', title, re.IGNORECASE)
-    
-    clean_title = re.sub(r'(?:season|সিজন)\s*\d+', '', title, flags=re.IGNORECASE)
-    clean_title = re.sub(r'(?:episode|ep|পর্ব|এপিসোড)\s*\d+', '', clean_title, flags=re.IGNORECASE)
-    clean_title = re.sub(r'\s+', ' ', clean_title).strip(" -_/")
-    
-    if not clean_title:
-        clean_title = title
-
-    suffix_parts = []
-    if season_match:
-        suffix_parts.append(f"S{season_match.group(1)}")
-    if ep_match:
-        suffix_parts.append(f"Ep {ep_match.group(1)}")
-        
-    if suffix_parts and not any(part in clean_title for part in suffix_parts):
-        return f"{clean_title} | {' '.join(suffix_parts)}"
-    
-    return clean_title
 
 # =========================================================================
 # UTILS
@@ -252,11 +177,11 @@ def fmt_date(ts: Optional[int]) -> str:
         return "N/A"
     return time.strftime("%Y-%m-%d", time.gmtime(ts))
 
-def truncate(text: str, n: int = 45) -> str:
+def truncate(text: str, n: int = 40) -> str:
     if not text:
         return "Untitled"
-    formatted = ai_format_title(text)
-    return formatted if len(formatted) <= n else formatted[: n - 1] + "…"
+    text = str(text)
+    return text if len(text) <= n else text[: n - 1] + "…"
 
 def esc(text) -> str:
     return html.escape(str(text or ""))
@@ -290,35 +215,38 @@ async def init_db() -> None:
                 cooldown_until INTEGER DEFAULT 0
             )
         """)
-        for col, ddl in [
-            ("username", "TEXT"), ("first_name", "TEXT"), ("joined_at", "INTEGER"),
-            ("referred_by", "INTEGER"), ("balance", "REAL DEFAULT 0"),
-            ("referrals", "INTEGER DEFAULT 0"), ("banned", "INTEGER DEFAULT 0"),
-            ("total_uploads", "INTEGER DEFAULT 0"), ("last_daily", "INTEGER DEFAULT 0"),
-            ("cooldown_until", "INTEGER DEFAULT 0"),
-        ]:
-            if not await _col_exists(db, "users", col):
-                try: await db.execute(f"ALTER TABLE users ADD COLUMN {col} {ddl}")
-                except: pass
 
         await db.execute("""
             CREATE TABLE IF NOT EXISTS posts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE, title TEXT,
-                category TEXT, owner_id INTEGER, is_admin INTEGER DEFAULT 0,
+                category TEXT, language TEXT DEFAULT '', owner_id INTEGER, is_admin INTEGER DEFAULT 0,
                 thumbnail_id TEXT, views INTEGER DEFAULT 0, created_at INTEGER,
                 published INTEGER DEFAULT 0, rating_sum REAL DEFAULT 0,
-                rating_count INTEGER DEFAULT 0, deleted INTEGER DEFAULT 0
+                rating_count INTEGER DEFAULT 0, deleted INTEGER DEFAULT 0,
+                folder_id INTEGER DEFAULT 0
             )
         """)
+
         for col, ddl in [
-            ("title", "TEXT"), ("category", "TEXT"), ("owner_id", "INTEGER"),
-            ("is_admin", "INTEGER DEFAULT 0"), ("thumbnail_id", "TEXT"),
-            ("views", "INTEGER DEFAULT 0"), ("created_at", "INTEGER"),
-            ("published", "INTEGER DEFAULT 0"), ("rating_sum", "REAL DEFAULT 0"),
-            ("rating_count", "INTEGER DEFAULT 0"), ("deleted", "INTEGER DEFAULT 0"),
+            ("language", "TEXT DEFAULT ''"),
+            ("folder_id", "INTEGER DEFAULT 0"),
         ]:
             if not await _col_exists(db, "posts", col):
                 try: await db.execute(f"ALTER TABLE posts ADD COLUMN {col} {ddl}")
+                except: pass
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS admin_folders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                admin_id INTEGER,
+                category TEXT,
+                language TEXT,
+                name TEXT
+            )
+        """)
+        for col, ddl in [("category", "TEXT"), ("language", "TEXT")]:
+            if not await _col_exists(db, "admin_folders", col):
+                try: await db.execute(f"ALTER TABLE admin_folders ADD COLUMN {col} {ddl}")
                 except: pass
 
         await db.execute("CREATE TABLE IF NOT EXISTS post_files (id INTEGER PRIMARY KEY AUTOINCREMENT, post_code TEXT, file_id TEXT, file_type TEXT, file_name TEXT, order_idx INTEGER DEFAULT 0)")
@@ -386,17 +314,8 @@ async def is_banned(user_id: int) -> bool:
     return bool(u.get("banned", 0))
 
 async def add_balance(user_id: int, amount: float) -> None:
-    try: 
-        await execute("UPDATE users SET balance = COALESCE(balance,0) + ? WHERE user_id=?", (amount, user_id))
-        
-        u = await get_user_safe(user_id)
-        ref_id = u.get("referred_by")
-        if ref_id and ref_id != user_id:
-            comm = amount * LIFETIME_REF_PERCENT
-            if comm > 0:
-                await execute("UPDATE users SET balance = COALESCE(balance,0) + ? WHERE user_id=?", (comm, ref_id))
-    except Exception as e: 
-        logger.error(f"add_balance: {e}")
+    try: await execute("UPDATE users SET balance = COALESCE(balance,0) + ? WHERE user_id=?", (amount, user_id))
+    except Exception as e: logger.error(f"add_balance: {e}")
 
 async def get_post(code: str) -> Optional[dict]:
     return await fetchone("SELECT * FROM posts WHERE code=? AND deleted=0", (code,))
@@ -489,10 +408,9 @@ def main_menu_kb(is_admin: bool = False) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📤 UPLOAD CONTENT", callback_data="user_upload")],
         [InlineKeyboardButton(text="👤 MY PROFILE", callback_data="profile"), InlineKeyboardButton(text="🔗 REFER & EARN", callback_data="referral")],
         [InlineKeyboardButton(text="💰 MY BALANCE", callback_data="balance"), InlineKeyboardButton(text="💸 WITHDRAW", callback_data="withdraw")],
-        [InlineKeyboardButton(text="🎬 BROWSE", callback_data="browse"), InlineKeyboardButton(text="🌐 LANGUAGE FILTER", callback_data="lang_browse")],
-        [InlineKeyboardButton(text="🔍 SEARCH", callback_data="search_code"), InlineKeyboardButton(text="📁 MY UPLOADS", callback_data="my_uploads")],
-        [InlineKeyboardButton(text="🏆 LEADERBOARD", callback_data="leaderboard"), InlineKeyboardButton(text="🎁 DAILY BONUS", callback_data="daily_bonus")],
-        [InlineKeyboardButton(text="ℹ️ HELP", callback_data="help")],
+        [InlineKeyboardButton(text="🎬 BROWSE", callback_data="browse"), InlineKeyboardButton(text="🔍 SEARCH", callback_data="search_code")],
+        [InlineKeyboardButton(text="📁 MY UPLOADS", callback_data="my_uploads"), InlineKeyboardButton(text="🏆 LEADERBOARD", callback_data="leaderboard")],
+        [InlineKeyboardButton(text="🎁 DAILY BONUS", callback_data="daily_bonus"), InlineKeyboardButton(text="ℹ️ HELP", callback_data="help")],
     ]
     if is_admin: rows.append([InlineKeyboardButton(text="⚙️ ADMIN PANEL", callback_data="admin_panel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -588,7 +506,7 @@ async def cmd_start(message: Message, state: FSMContext):
         try:
             await add_balance(referred_by, bonus)
             await execute("UPDATE users SET referrals = COALESCE(referrals,0) + 1 WHERE user_id=?", (referred_by,))
-            await bot.send_message(referred_by, f"🎉 <b>NEW REFERRAL!</b>\n\n💰 You earned <b>{fmt_money(bonus)}</b> (+ 5% lifetime earnings on their views)!\n👥 Keep inviting!")
+            await bot.send_message(referred_by, f"🎉 <b>NEW REFERRAL!</b>\n\n💰 You earned <b>{fmt_money(bonus)}</b>!\n👥 Keep inviting!")
         except Exception as e:
             logger.error(f"ref bonus: {e}")
 
@@ -606,7 +524,7 @@ async def cmd_start(message: Message, state: FSMContext):
         return
 
     await message.answer(
-        "🏠 <b>WELCOME TO MOVIEVERSE!</b>\n\n🎬 Watch content, earn rewards (with 5% lifetime referral bonus).\n💸 $0.0001 per view, $0.025 per referral.",
+        "🏠 <b>WELCOME TO MOVIEVERSE!</b>\n\n🎬 Watch content, earn rewards.\n💸 $0.0001 per view, $0.025 per referral.",
         reply_markup=main_menu_kb(uid == ADMIN_CHAT_ID))
 
 @router.callback_query(F.data == "check_join")
@@ -627,7 +545,7 @@ async def cb_main(call: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "help")
 async def cb_help(call: CallbackQuery):
-    await safe_edit(call, "ℹ️ <b>HELP</b>\n\n🎬 <b>Browse:</b> Find content by category (12 items per page)\n🌐 <b>Language Filter:</b> Browse anime/series by language (Hindi, English, Japanese, Bengali)\n🔍 <b>AI Search:</b> Cross-lingual intelligent search with suggestions & pagination\n📥 <b>Unlock:</b> Watch ad to unlock files\n📤 <b>Upload:</b> Share privately with code\n🔗 <b>Refer:</b> Earn $0.025 + 5% lifetime earnings\n🎁 <b>Daily:</b> Claim bonus every 24h\n💸 <b>Withdraw:</b> Min $10 via Binance/USDT", reply_markup=back_kb("main"))
+    await safe_edit(call, "ℹ️ <b>HELP</b>\n\n🎬 <b>Browse:</b> Find content by category\n🔍 <b>Search:</b> Search by code or title\n📥 <b>Unlock:</b> Watch ad to unlock files\n📤 <b>Upload:</b> Share privately with code\n🔗 <b>Refer:</b> Earn $0.025 per friend\n🎁 <b>Daily:</b> Claim bonus every 24h\n💸 <b>Withdraw:</b> Min $10 via Binance/USDT", reply_markup=back_kb("main"))
 
 # =========================================================================
 # PROFILE / BALANCE / REFERRAL / DAILY / LEADERBOARD
@@ -667,7 +585,7 @@ async def _show_profile(chat_id, user_id, edit_call=None):
             f"📛 <b>Username:</b>  {'@' + esc(u['username']) if u.get('username') else '—'}\n"
             f"📅 <b>Joined:</b>  {fmt_date(u.get('joined_at'))}\n\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━\n📊 <b>STATISTICS</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"🎬 <b>Posts:</b>  {len(posts)}\n👁 <b>Views:</b>  {total_views}\n👥 <b>Referrals:</b>  {refs} (5% Lifetime Commission)\n{codes_txt}\n"
+            f"🎬 <b>Posts:</b>  {len(posts)}\n👁 <b>Views:</b>  {total_views}\n👥 <b>Referrals:</b>  {refs}\n{codes_txt}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━\n💰 <b>EARNINGS</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"🎬 <b>Video:</b>  {fmt_money(video_earn)}\n🔗 <b>Referral:</b>  {fmt_money(ref_earn)}\n💵 <b>TOTAL:</b>  <b>{fmt_money(bal)}</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━")
@@ -693,7 +611,7 @@ async def _show_balance(chat_id, user_id, edit_call=None):
     rb = await get_setting("referral_bonus", str(REFERRAL_BONUS))
     text = (f"💰 <b>MY BALANCE</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"💵 <b>Current:</b>  {fmt_money(u.get('balance', 0))}\n📉 <b>Minimum Withdrawal:</b>  ${min_w}\n\n"
-            f"💡 <b>How to earn:</b>\n👁 ${vr} per unique view\n🔗 ${rb} + 5% lifetime earnings per referral")
+            f"💡 <b>How to earn:</b>\n👁 ${vr} per unique view\n🔗 ${rb} per referral")
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💸 WITHDRAW NOW", callback_data="withdraw")],
         [InlineKeyboardButton(text="🏠 MAIN MENU", callback_data="main")],
@@ -717,9 +635,8 @@ async def _show_referral(chat_id, user_id, edit_call=None):
     refs = int(u.get("referrals", 0) or 0)
     earned = refs * bonus
 
-    text = (f"🔗 <b>REFER & EARN (5% LIFETIME COMMISSION)</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    text = (f"🔗 <b>REFER & EARN</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"🎁 <b>Invite friends and earn!</b>\n\n💵 <b>Reward per referral:</b>  <b>{fmt_money(bonus)}</b>\n"
-            f"🔄 <b>Lifetime Bonus:</b> 5% of all their views/earnings!\n"
             f"⚡ <b>Instant credit</b>\n♾ <b>Unlimited</b> referrals\n\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━\n📊 <b>YOUR STATS</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"👥 <b>Total Referrals:</b>  {refs}\n💰 <b>Earned:</b>  {fmt_money(earned)}\n\n"
@@ -768,153 +685,119 @@ async def cb_leaderboard(call: CallbackQuery):
     await safe_edit(call, text, reply_markup=back_kb("main"))
 
 # =========================================================================
-# LANGUAGE BROWSER & FILTERING
-# =========================================================================
-@router.callback_query(F.data == "lang_browse")
-async def cb_lang_browse(call: CallbackQuery):
-    kb = []
-    row = []
-    for lang_name, lang_code in SUPPORTED_LANGUAGES:
-        row.append(InlineKeyboardButton(text=f"🌐 {lang_name}", callback_data=f"langpage:{lang_code}:0"))
-        if len(row) == 2:
-            kb.append(row)
-            row = []
-    if row:
-        kb.append(row)
-    kb.append([InlineKeyboardButton(text="🏠 MAIN MENU", callback_data="main")])
-    await safe_edit(call, "🌐 <b>LANGUAGE CATEGORY BROWSER</b>\n\nSelect a language to browse dubbed/subtitled series & anime:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
-
-@router.callback_query(F.data.startswith("langpage:"))
-async def cb_lang_page(call: CallbackQuery):
-    parts = call.data.split(":")
-    if len(parts) < 3:
-        await call.answer("Invalid request.", show_alert=True)
-        return
-    lang_code = parts[1]
-    page = int(parts[2])
-    await show_language_page(call, lang_code, page=page)
-
-async def show_language_page(call: CallbackQuery, lang_code: str, page: int = 0):
-    posts = await fetchall("SELECT * FROM posts WHERE published=1 AND deleted=0 ORDER BY created_at DESC")
-    
-    filtered = []
-    for p in posts:
-        if detect_language_tag(p['title']) == lang_code:
-            filtered.append(p)
-
-    lang_display = next((name for name, code in SUPPORTED_LANGUAGES if code == lang_code), lang_code.upper())
-
-    if not filtered:
-        other_langs = [name for name, code in SUPPORTED_LANGUAGES if code != lang_code]
-        text = f"🌐 <b>Language: {lang_display}</b>\n\n❌ Not available in {lang_display}. However, content may be available in other languages like {', '.join(other_langs[:3])}!"
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🌐 OTHER LANGUAGES", callback_data="lang_browse"), InlineKeyboardButton(text="🏠 MAIN MENU", callback_data="main")]])
-        await safe_edit(call, text, reply_markup=kb)
-        return
-
-    total_posts = len(filtered)
-    max_pages = (total_posts + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
-    page = max(0, min(page, max_pages - 1))
-    
-    start_idx = page * ITEMS_PER_PAGE
-    end_idx = start_idx + ITEMS_PER_PAGE
-    page_posts = filtered[start_idx:end_idx]
-
-    text = f"🌐 <b>Language: {lang_display}</b>\n📄 Page {page + 1} of {max_pages} (Total: {total_posts})\n\nSelect a title:"
-    kb = []
-    for p in page_posts:
-        formatted_title = ai_format_title(p['title'])
-        kb.append([InlineKeyboardButton(text=f"🎬 {truncate(formatted_title, 40)}", callback_data=f"view:{p['code']:.17s}")])
-
-    nav_buttons = []
-    if page > 0:
-        nav_buttons.append(InlineKeyboardButton(text="⬅️ Previous", callback_data=f"langpage:{lang_code}:{page - 1}"))
-    nav_buttons.append(InlineKeyboardButton(text="🌐 Languages", callback_data="lang_browse"))
-    if page < max_pages - 1:
-        nav_buttons.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"langpage:{lang_code}:{page + 1}"))
-    
-    if nav_buttons:
-        kb.append(nav_buttons)
-
-    await safe_edit(call, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
-    await call.answer()
-
-# =========================================================================
-# BROWSE / CATEGORY / AI QUICK SUGGESTIONS SEARCH
+# BROWSE / CATEGORY / SEARCH (WITH PAGINATION)
 # =========================================================================
 @router.callback_query(F.data == "browse")
 async def cb_browse(call: CallbackQuery):
     rows = await fetchall("SELECT category, COUNT(*) as c FROM posts WHERE published=1 AND deleted=0 GROUP BY category")
     counts = {r["category"]: r["c"] for r in rows}
     kb = []
-    for cat in ("movie", "drama", "anime", "app"):
-        kb.append([InlineKeyboardButton(text=f"{CATEGORY_NAMES[cat]} ({counts.get(cat, 0)})", callback_data=f"catpage:{cat}:0")])
+    for cat in ("movie", "viral", "anime", "app"):
+        kb.append([InlineKeyboardButton(text=f"{CATEGORY_NAMES[cat]} ({counts.get(cat, 0)})", callback_data=f"cat:{cat}")])
     kb.append([InlineKeyboardButton(text="🏠 MAIN MENU", callback_data="main")])
     await safe_edit(call, "🎬 <b>BROWSE CATEGORIES</b>\n\nSelect category:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
-@router.callback_query(F.data.startswith("catpage:"))
-async def cb_category_page(call: CallbackQuery):
+@router.callback_query(F.data.startswith("cat:"))
+async def cb_category(call: CallbackQuery):
+    cat = call.data.split(":", 1)[1]
+    if cat in ("movie", "anime"):
+        # ল্যাঙ্গুয়েজ সিলেকশন অপশন (হিন্দি, বাংলা, ইংলিশ ক্রমানুসারে)
+        kb = []
+        for lang_code, lang_name in LANGUAGES.items():
+            kb.append([InlineKeyboardButton(text=lang_name, callback_data=f"browselang:{cat}:{lang_code}")])
+        kb.append([InlineKeyboardButton(text="🔙 BACK", callback_data="browse")])
+        await safe_edit(call, f"{CATEGORY_NAMES[cat]} — 🌐 <b>Select Language:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    else:
+        # Viral Video & App — সরাসরি পোস্ট লিস্ট (Page 1)
+        await show_category_posts(call, cat=cat, lang="", folder_id=0, page=1)
+
+@router.callback_query(F.data.startswith("browselang:"))
+async def cb_browse_lang(call: CallbackQuery):
     parts = call.data.split(":")
-    if len(parts) < 3:
-        await call.answer("Invalid request.", show_alert=True)
-        return
-    cat = parts[1]
-    page = int(parts[2])
-    await show_category_page(call, cat, page=page)
+    cat, lang = parts[1], parts[2]
+    
+    # উক্ত ক্যাটাগরি ও ল্যাঙ্গুয়েজের ফোল্ডারসমূহ
+    folders = await fetchall("SELECT * FROM admin_folders WHERE category=? AND language=?", (cat, lang))
+    if folders:
+        kb = []
+        for f in folders:
+            kb.append([InlineKeyboardButton(text=f"📁 {f['name']}", callback_data=f"browsefolder:{cat}:{lang}:{f['id']}:1")])
+        kb.append([InlineKeyboardButton(text="📄 All Direct Videos", callback_data=f"browsefolder:{cat}:{lang}:0:1")])
+        kb.append([InlineKeyboardButton(text="🔙 BACK", callback_data=f"cat:{cat}")])
+        await safe_edit(call, f"{CATEGORY_NAMES[cat]} ({LANGUAGES[lang]}) — 📁 <b>Select Folder:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    else:
+        # কোনো ফোল্ডার না থাকলে সরাসরি পোস্ট দেখাবে
+        await show_category_posts(call, cat=cat, lang=lang, folder_id=0, page=1)
 
-async def show_category_page(call: CallbackQuery, cat: str, page: int = 0):
-    posts = await fetchall("SELECT * FROM posts WHERE category=? AND published=1 AND deleted=0 ORDER BY created_at DESC", (cat,))
-    if not posts:
-        await call.answer("No posts yet in this category.", show_alert=True)
+@router.callback_query(F.data.startswith("browsefolder:"))
+async def cb_browse_folder(call: CallbackQuery):
+    parts = call.data.split(":")
+    cat, lang, folder_id, page = parts[1], parts[2], int(parts[3]), int(parts[4])
+    await show_category_posts(call, cat=cat, lang=lang, folder_id=folder_id, page=page)
+
+async def show_category_posts(call: CallbackQuery, cat: str, lang: str, folder_id: int, page: int = 1):
+    query = "SELECT * FROM posts WHERE category=? AND published=1 AND deleted=0"
+    params = [cat]
+    
+    if lang:
+        query += " AND language=?"
+        params.append(lang)
+    if folder_id > 0:
+        query += " AND folder_id=?"
+        params.append(folder_id)
+        
+    query += " ORDER BY created_at DESC"
+    
+    all_posts = await fetchall(query, tuple(params))
+    
+    if not all_posts:
+        await call.answer("No posts found here.", show_alert=True)
         return
-    
-    total_posts = len(posts)
-    max_pages = (total_posts + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
-    page = max(0, min(page, max_pages - 1))
-    
-    start_idx = page * ITEMS_PER_PAGE
+
+    total_items = len(all_posts)
+    total_pages = (total_items + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
+    page = max(1, min(page, total_pages))
+
+    start_idx = (page - 1) * ITEMS_PER_PAGE
     end_idx = start_idx + ITEMS_PER_PAGE
-    page_posts = posts[start_idx:end_idx]
+    page_posts = all_posts[start_idx:end_idx]
 
-    text = f"{CATEGORY_NAMES.get(cat, '📁 Category')} — <b>LATEST POSTS</b>\n📄 Page {page + 1} of {max_pages} (Total: {total_posts})\n\nSelect a title:"
     kb = []
+    # পোস্টের লিস্ট
     for p in page_posts:
-        formatted_title = ai_format_title(p['title'])
-        kb.append([InlineKeyboardButton(text=f"🎬 {truncate(formatted_title, 40)}", callback_data=f"view:{p['code']:.17s}")])
+        kb.append([InlineKeyboardButton(text=f"🎬 {truncate(p['title'], 25)} (👁 {p['views']})", callback_data=f"view:{p['code']}")])
 
+    # পেজিনেশন কিবোর্ড (Previous | Main Menu | Next)
     nav_buttons = []
-    if page > 0:
-        nav_buttons.append(InlineKeyboardButton(text="⬅️ Previous", callback_data=f"catpage:{cat}:{page - 1}"))
-    nav_buttons.append(InlineKeyboardButton(text="🔙 Back", callback_data="browse"))
-    if page < max_pages - 1:
-        nav_buttons.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"catpage:{cat}:{page + 1}"))
-    
-    if nav_buttons:
-        kb.append(nav_buttons)
+    if page > 1:
+        nav_buttons.append(InlineKeyboardButton(text="⬅️ Previous", callback_data=f"browsefolder:{cat}:{lang}:{folder_id}:{page-1}"))
+    else:
+        nav_buttons.append(InlineKeyboardButton(text="⬅️ Previous", callback_data="noop"))
 
-    await safe_edit(call, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    nav_buttons.append(InlineKeyboardButton(text="🏠 Main Menu", callback_data="main"))
+
+    if page < total_pages:
+        nav_buttons.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"browsefolder:{cat}:{lang}:{folder_id}:{page+1}"))
+    else:
+        nav_buttons.append(InlineKeyboardButton(text="Next ➡️", callback_data="noop"))
+
+    kb.append(nav_buttons)
+
+    text_header = f"<b>{CATEGORY_NAMES[cat]}</b>"
+    if lang in LANGUAGES:
+        text_header += f" | <b>{LANGUAGES[lang]}</b>"
+    text_header += f"\n📌 Page <b>{page}/{total_pages}</b> (Total: {total_items}):"
+
+    await safe_edit(call, text_header, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+@router.callback_query(F.data == "noop")
+async def cb_noop(call: CallbackQuery):
     await call.answer()
 
 @router.callback_query(F.data == "search_code")
 async def cb_search(call: CallbackQuery, state: FSMContext):
     await state.set_state(UserStates.waiting_search)
-    
-    kb = []
-    row = []
-    for sug in POPULAR_SUGGESTIONS:
-        row.append(InlineKeyboardButton(text=f"✨ {sug}", callback_data=f"sug:{sug}"))
-        if len(row) == 3:
-            kb.append(row)
-            row = []
-    if row:
-        kb.append(row)
-    kb.append([InlineKeyboardButton(text="🏠 MAIN MENU", callback_data="main")])
-
-    await safe_edit(call, "🔍 <b>AI SMART SEARCH</b>\n\nType any title, anime, or keyword in <b>any language</b> (Bengali, Hindi, English, Japanese etc.), OR tap a popular suggestion below:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
-
-@router.callback_query(F.data.startswith("sug:"))
-async def cb_suggestion_click(call: CallbackQuery, state: FSMContext):
-    sug = call.data.split(":", 1)[1]
-    await execute_search_query(call, sug, is_callback=True)
+    await safe_edit(call, "🔍 <b>SEARCH</b>\n\nSend a title keyword to search:", reply_markup=back_kb("main"))
 
 @router.message(UserStates.waiting_search)
 async def search_handler(message: Message, state: FSMContext):
@@ -923,95 +806,27 @@ async def search_handler(message: Message, state: FSMContext):
     if not q:
         await message.answer("Send a valid query.", reply_markup=back_kb("main"))
         return
-    await execute_search_query(message, q, is_callback=False)
-
-async def execute_search_query(target: Union[Message, CallbackQuery], q: str, is_callback: bool = False):
-    # Normalize and translate phonetic/cross-lingual queries
-    normalized_q = normalize_search_query(q)
-    keywords = [kw for kw in normalized_q.split() if len(kw) > 1]
-    if not keywords:
-        keywords = [normalized_q]
-
-    query_parts = " OR ".join(["title LIKE ?" for _ in keywords])
-    params = tuple([f"%{kw}%" for kw in keywords])
-    
-    rows = await fetchall(f"SELECT * FROM posts WHERE published=1 AND deleted=0 AND ({query_parts}) ORDER BY created_at DESC", params)
-    
+    rows = await fetchall("SELECT * FROM posts WHERE published=1 AND deleted=0 AND title LIKE ? ORDER BY created_at DESC LIMIT 20", (f"%{q}%",))
     if not rows:
-        rows = await fetchall("SELECT * FROM posts WHERE published=1 AND deleted=0 ORDER BY created_at DESC LIMIT 200")
-        q_lower = normalized_q.lower()
-        rows = [p for p in rows if any(kw in p['title'].lower() for kw in q_lower.split())]
-
-    if not rows:
-        text = f"🤖 <b>AI Cross-Lingual Search:</b> No matching content found for <b>'{esc(q)}'</b>.\n\n💡 <i>Tip: Try searching with English keywords or check our Language Filter!</i>"
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🌐 LANGUAGE FILTER", callback_data="lang_browse"), InlineKeyboardButton(text="🏠 MAIN MENU", callback_data="main")]])
-        if is_callback:
-            await safe_edit(target, text, reply_markup=kb)
-        else:
-            await target.answer(text, reply_markup=kb)
+        await message.answer("❌ No results.", reply_markup=back_kb("main"))
         return
-
-    await send_search_page(target, q, rows, page=0, is_callback=is_callback)
-
-async def send_search_page(target: Union[Message, CallbackQuery], query: str, posts: list, page: int = 0, is_callback: bool = False):
-    total_posts = len(posts)
-    max_pages = (total_posts + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
-    page = max(0, min(page, max_pages - 1))
-    
-    start_idx = page * ITEMS_PER_PAGE
-    end_idx = start_idx + ITEMS_PER_PAGE
-    page_posts = posts[start_idx:end_idx]
-
-    text = f"🤖 <b>AI Search Results for:</b> <i>{esc(query)}</i>\n📄 Page {page + 1} of {max_pages} (Total: {total_posts})\n\nSelect a title:"
+    text = f"🔍 <b>RESULTS FOR:</b> <i>{esc(q)}</i>\n\n"
     kb = []
-    for p in page_posts:
-        formatted_title = ai_format_title(p['title'])
-        kb.append([InlineKeyboardButton(text=f"🎬 {truncate(formatted_title, 38)}", callback_data=f"view:{p['code']:.17s}")])
-
-    nav_buttons = []
-    if page > 0:
-        nav_buttons.append(InlineKeyboardButton(text="⬅️ Previous", callback_data=f"srch:{page - 1}:{query[:10]}"))
-    nav_buttons.append(InlineKeyboardButton(text="❌ Close", callback_data="main"))
-    if page < max_pages - 1:
-        nav_buttons.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"srch:{page + 1}:{query[:10]}"))
-    
-    if nav_buttons:
-        kb.append(nav_buttons)
-
-    markup = InlineKeyboardMarkup(inline_keyboard=kb)
-    if is_callback:
-        await safe_edit(target, text, reply_markup=markup)
-    else:
-        await target.answer(text, reply_markup=markup)
-
-@router.callback_query(F.data.startswith("srch:"))
-async def cb_search_pagination(call: CallbackQuery):
-    parts = call.data.split(":", 2)
-    if len(parts) < 3:
-        await call.answer("Invalid request.", show_alert=True)
-        return
-    page = int(parts[1])
-    query = parts[2]
-    
-    norm_q = normalize_search_query(query)
-    rows = await fetchall("SELECT * FROM posts WHERE published=1 AND deleted=0 AND title LIKE ? ORDER BY created_at DESC", (f"%{norm_q}%",))
-    if not rows:
-        rows = await fetchall("SELECT * FROM posts WHERE published=1 AND deleted=0 ORDER BY created_at DESC LIMIT 200")
-        rows = [p for p in rows if any(q in p['title'].lower() for q in norm_q.lower().split())]
-
-    await send_search_page(call, query, rows, page=page, is_callback=True)
-    await call.answer()
+    for p in rows:
+        text += f"🎬 {esc(truncate(p['title'], 40))}\n"
+        kb.append([InlineKeyboardButton(text=f"🎬 {truncate(p['title'], 35)}", callback_data=f"view:{p['code']}")])
+    kb.append([InlineKeyboardButton(text="🏠 MAIN MENU", callback_data="main")])
+    await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
 # =========================================================================
-# POST CARD & DELIVERY
+# POST CARD
 # =========================================================================
 async def show_post_card(chat_id: int, code: str):
     post = await get_post(code)
     if not post:
         await bot.send_message(chat_id, "⚠️ Post not found.")
         return
-    formatted_title = ai_format_title(post['title'])
-    text = f"🎬 <b>{esc(formatted_title)}</b>\n\n👇 Watch the ad to unlock:"
+    text = f"🎬 <b>{esc(post['title'])}</b>\n\n👇 Watch the ad to unlock:"
     kb = post_card_kb(code)
     if post.get("thumbnail_id"):
         try:
@@ -1040,6 +855,9 @@ async def cb_star(call: CallbackQuery):
     if ok: await call.answer(f"⭐ Thanks! Rated {stars}/5", show_alert=True)
     else: await call.answer("❌ Failed to save rating.", show_alert=True)
 
+# =========================================================================
+# MINI APP CONFIRM & TEXT HANDLER
+# =========================================================================
 @router.message(F.web_app_data)
 async def handle_web_app_data(message: Message):
     try:
@@ -1106,12 +924,11 @@ async def _deliver(chat_id: int, code: str, user_id: int):
         if not post.get("is_admin"):
             await add_balance(post["owner_id"], reward)
     
-    formatted_title = ai_format_title(post['title'])
-    await bot.send_message(chat_id, f"📥 <b>{esc(formatted_title)}</b>\n\nSending {len(files)} file(s). ⚠️ Auto-delete in 20 min.")
+    await bot.send_message(chat_id, f"📥 <b>{esc(post['title'])}</b>\n\nSending {len(files)} file(s). ⚠️ Auto-delete in 20 min.")
     for f in files:
         try:
             sent = None
-            cap = esc(formatted_title)
+            cap = esc(post["title"])
             if f["file_type"] == "video": sent = await bot.send_video(chat_id, f["file_id"], caption=f"🎬 {cap}", protect_content=True)
             elif f["file_type"] == "audio": sent = await bot.send_audio(chat_id, f["file_id"], caption=f"🎵 {cap}", protect_content=True)
             elif f["file_type"] == "photo": sent = await bot.send_photo(chat_id, f["file_id"], caption=f"🖼 {cap}", protect_content=True)
@@ -1126,7 +943,7 @@ async def _auto_delete(chat_id: int, mid: int):
     except: pass
 
 # =========================================================================
-# USER UPLOAD & MY UPLOADS (12-ITEMS PAGINATION)
+# USER UPLOAD
 # =========================================================================
 @router.callback_query(F.data == "user_upload")
 async def cb_upload(call: CallbackQuery, state: FSMContext):
@@ -1173,10 +990,9 @@ async def recv_user_title(message: Message, state: FSMContext):
     edit_code = data.get("edit_code")
 
     if edit_code:
-        formatted = ai_format_title(title)
-        await execute("UPDATE posts SET title=? WHERE code=?", (formatted, edit_code))
+        await execute("UPDATE posts SET title=? WHERE code=?", (title, edit_code))
         await state.clear()
-        await message.answer(f"✅ Title updated: <b>{esc(formatted)}</b>", reply_markup=back_kb("my_uploads"))
+        await message.answer(f"✅ Title updated: <b>{esc(title)}</b>", reply_markup=back_kb("my_uploads"))
         return
 
     await state.update_data(title=title)
@@ -1194,8 +1010,7 @@ async def recv_user_thumb(message: Message, state: FSMContext):
 
     data = await state.get_data()
     files = data.get("files", [])
-    raw_title = data.get("title", "Untitled")
-    title = ai_format_title(raw_title)
+    title = data.get("title", "Untitled")
 
     code = await unique_code()
     await execute("INSERT INTO posts (code, title, category, owner_id, is_admin, thumbnail_id, created_at, published) VALUES (?, ?, 'private', ?, 0, ?, ?, 0)", (code, title, message.from_user.id, thumb, int(time.time())))
@@ -1208,51 +1023,18 @@ async def recv_user_thumb(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(f"✅ <b>UPLOAD COMPLETE!</b>\n\n📌 Title: <b>{esc(title)}</b>\n🔗 Share: <code>{link}</code>", reply_markup=back_kb("main"))
 
+# =========================================================================
+# MY UPLOADS
+# =========================================================================
 @router.callback_query(F.data == "my_uploads")
 async def cb_my_uploads(call: CallbackQuery):
-    await show_my_uploads_page(call, page=0)
-
-@router.callback_query(F.data.startswith("myuploads:"))
-async def cb_my_uploads_page(call: CallbackQuery):
-    parts = call.data.split(":")
-    if len(parts) < 2:
-        await call.answer("Invalid request.", show_alert=True)
-        return
-    page = int(parts[1])
-    await show_my_uploads_page(call, page=page)
-
-async def show_my_uploads_page(call: CallbackQuery, page: int = 0):
-    rows = await fetchall("SELECT * FROM posts WHERE owner_id=? AND deleted=0 ORDER BY created_at DESC", (call.from_user.id,))
+    rows = await fetchall("SELECT * FROM posts WHERE owner_id=? AND deleted=0 ORDER BY created_at DESC LIMIT 20", (call.from_user.id,))
     if not rows:
         await call.answer("You haven't uploaded anything.", show_alert=True)
         return
-    
-    total_posts = len(rows)
-    max_pages = (total_posts + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
-    page = max(0, min(page, max_pages - 1))
-    
-    start_idx = page * ITEMS_PER_PAGE
-    end_idx = start_idx + ITEMS_PER_PAGE
-    page_posts = rows[start_idx:end_idx]
-
-    text = f"📁 <b>MY UPLOADS</b>\n📄 Page {page + 1} of {max_pages} (Total: {total_posts})\n\nTap to manage:"
-    kb = []
-    for p in page_posts:
-        formatted_title = ai_format_title(p['title'])
-        kb.append([InlineKeyboardButton(text=f"🎬 {truncate(formatted_title, 32)} (👁 {p['views']})", callback_data=f"myedit:{p['code']:.17s}")])
-
-    nav_buttons = []
-    if page > 0:
-        nav_buttons.append(InlineKeyboardButton(text="⬅️ Previous", callback_data=f"myuploads:{page - 1}"))
-    nav_buttons.append(InlineKeyboardButton(text="🏠 Main Menu", callback_data="main"))
-    if page < max_pages - 1:
-        nav_buttons.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"myuploads:{page + 1}"))
-    
-    if nav_buttons:
-        kb.append(nav_buttons)
-
-    await safe_edit(call, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
-    await call.answer()
+    kb = [[InlineKeyboardButton(text=f"🎬 {truncate(p['title'], 35)} (👁 {p['views']})", callback_data=f"myedit:{p['code']}")] for p in rows]
+    kb.append([InlineKeyboardButton(text="🏠 MAIN MENU", callback_data="main")])
+    await safe_edit(call, f"📁 <b>MY UPLOADS</b> ({len(rows)})\n\nTap to manage:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
 @router.callback_query(F.data.startswith("myedit:"))
 async def cb_myedit(call: CallbackQuery):
@@ -1261,13 +1043,12 @@ async def cb_myedit(call: CallbackQuery):
     if not post or post["owner_id"] != call.from_user.id:
         await call.answer("Not yours.", show_alert=True)
         return
-    formatted_title = ai_format_title(post['title'])
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏️ EDIT TITLE", callback_data=f"mytitle:{code}")],
         [InlineKeyboardButton(text="🗑 DELETE", callback_data=f"mydel:{code}")],
         [InlineKeyboardButton(text="🔙 BACK", callback_data="my_uploads")],
     ])
-    await safe_edit(call, f"📄 <b>{esc(formatted_title)}</b>\n👁 Views: {post['views']}", reply_markup=kb)
+    await safe_edit(call, f"📄 <b>{esc(post['title'])}</b>\n👁 Views: {post['views']}", reply_markup=kb)
 
 @router.callback_query(F.data.startswith("mydel:"))
 async def cb_mydel(call: CallbackQuery):
@@ -1278,7 +1059,7 @@ async def cb_mydel(call: CallbackQuery):
         return
     await execute("UPDATE posts SET deleted=1 WHERE code=?", (code,))
     await call.answer("🗑 Deleted.")
-    await show_my_uploads_page(call, page=0)
+    await cb_my_uploads(call)
 
 @router.callback_query(F.data.startswith("mytitle:"))
 async def cb_mytitle(call: CallbackQuery, state: FSMContext):
@@ -1400,7 +1181,7 @@ async def cb_publish(call: CallbackQuery, state: FSMContext):
     await state.clear()
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎬 MOVIE", callback_data="pubcat:movie")],
-        [InlineKeyboardButton(text="🎭 DRAMA", callback_data="pubcat:drama")],
+        [InlineKeyboardButton(text="🔥 VIRAL VIDEO", callback_data="pubcat:viral")],
         [InlineKeyboardButton(text="🎌 ANIME", callback_data="pubcat:anime")],
         [InlineKeyboardButton(text="📱 APP", callback_data="pubcat:app")],
         [InlineKeyboardButton(text="❌ CANCEL", callback_data="admin_panel")],
@@ -1411,7 +1192,7 @@ async def cb_publish(call: CallbackQuery, state: FSMContext):
 async def cb_pubcat(call: CallbackQuery, state: FSMContext):
     cat = call.data.split(":", 1)[1]
     await state.set_state(AdminStates.uploading_files)
-    await state.update_data(category=cat, files=[], thumb=None)
+    await state.update_data(category=cat, files=[], thumb=None, folder_id=0, language="")
     await safe_edit(call, f"Category: <b>{CATEGORY_NAMES[cat]}</b>\n\nUpload files (1–{MAX_ADMIN_FILES}). Then tap DONE.", reply_markup=done_upload_kb("pub_files_done"))
 
 @router.message(AdminStates.uploading_files, F.from_user.id == ADMIN_CHAT_ID)
@@ -1449,8 +1230,7 @@ async def admin_recv_title(message: Message, state: FSMContext):
     if not title:
         await message.answer("Send a valid title.")
         return
-    formatted_title = ai_format_title(title)
-    await state.update_data(title=formatted_title)
+    await state.update_data(title=title)
     await state.set_state(AdminStates.waiting_thumb)
     await message.answer("🖼 Send a <b>thumbnail</b> photo, or type <code>skip</code>:")
 
@@ -1463,16 +1243,130 @@ async def admin_recv_thumb(message: Message, state: FSMContext):
         await message.answer("Send a photo or type <code>skip</code>.")
         return
     await state.update_data(thumb=thumb)
+    
+    data = await state.get_data()
+    cat = data.get("category")
+
+    # Movie & Anime হলে ল্যাঙ্গুয়েজ সিলেক্ট করতে হবে (হিন্দি, বাংলা, ইংলিশ ক্রমানুসারে)
+    if cat in ("movie", "anime"):
+        kb = []
+        for lang_code, lang_name in LANGUAGES.items():
+            kb.append([InlineKeyboardButton(text=lang_name, callback_data=f"setpublang:{lang_code}")])
+        await message.answer("🌐 Select Language for this content:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    else:
+        # Viral Video & App হলে কোনো ফোল্ডার বা ল্যাঙ্গুয়েজ সিলেক্ট করতে হবে না
+        await show_confirm_preview(message, state)
+
+@router.callback_query(F.data.startswith("setpublang:"), F.from_user.id == ADMIN_CHAT_ID)
+async def cb_set_pub_lang(call: CallbackQuery, state: FSMContext):
+    lang_code = call.data.split(":", 1)[1]
+    await state.update_data(language=lang_code)
+    
+    data = await state.get_data()
+    cat = data.get("category")
+    
+    # উক্ত ল্যাঙ্গুয়েজ ও ক্যাটাগরির ফোল্ডারসমূহ
+    folders = await fetchall("SELECT * FROM admin_folders WHERE admin_id=? AND category=? AND language=?", (ADMIN_CHAT_ID, cat, lang_code))
+    
+    if not folders:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📁 Create Folder", callback_data="admin_create_folder")],
+            [InlineKeyboardButton(text="📂 All Folders", callback_data="admin_show_all_folders")],
+            [InlineKeyboardButton(text="➡️ Direct Upload (No Folder)", callback_data="admin_select_folder:0")],
+            [InlineKeyboardButton(text="❌ Close", callback_data="admin_close_menu")]
+        ])
+        await safe_edit(call, f"আপনার <b>{LANGUAGES[lang_code]}</b> ভাষায় কোনো ফোল্ডার তৈরি করা নেই। অপশন সিলেক্ট করুন:", reply_markup=kb)
+    else:
+        buttons = []
+        for f in folders:
+            buttons.append([InlineKeyboardButton(text=f"📁 {f['name']}", callback_data=f"admin_select_folder:{f['id']}")])
+        buttons.append([InlineKeyboardButton(text="➕ Create Folder", callback_data="admin_create_folder")])
+        buttons.append([InlineKeyboardButton(text="➡️ Direct Upload (No Folder)", callback_data="admin_select_folder:0")])
+        buttons.append([InlineKeyboardButton(text="❌ Close", callback_data="admin_close_menu")])
+        await safe_edit(call, f"<b>{LANGUAGES[lang_code]}</b> ভাষায় কোন ফোল্ডারে আপলোড করতে চান? সিলেক্ট করুন:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@router.callback_query(F.data == "admin_create_folder", F.from_user.id == ADMIN_CHAT_ID)
+async def process_admin_create_folder(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(AdminStates.waiting_folder_name)
+    await callback.message.edit_text("✏️ নতুন ফোল্ডারের নামটি লিখে পাঠান (যেমন: Naruto):")
+    await callback.answer()
+
+@router.message(AdminStates.waiting_folder_name, F.from_user.id == ADMIN_CHAT_ID)
+async def save_admin_folder_name(message: Message, state: FSMContext):
+    folder_name = (message.text or "").strip()
+    if not folder_name:
+        await message.answer("সঠিক নাম দিন:")
+        return
+    
+    data = await state.get_data()
+    cat = data.get("category")
+    lang = data.get("language")
+    
+    folder_id = await execute("INSERT INTO admin_folders (admin_id, category, language, name) VALUES (?, ?, ?, ?)", (ADMIN_CHAT_ID, cat, lang, folder_name))
+    await state.update_data(folder_id=folder_id)
+    await message.answer(f"✅ <b>'{folder_name}'</b> ফোল্ডার তৈরি হয়েছে!")
+    await show_confirm_preview(message, state)
+
+@router.callback_query(F.data == "admin_show_all_folders", F.from_user.id == ADMIN_CHAT_ID)
+async def process_admin_show_all_folders(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    cat = data.get("category")
+    lang = data.get("language")
+    
+    folders = await fetchall("SELECT * FROM admin_folders WHERE admin_id=? AND category=? AND language=?", (ADMIN_CHAT_ID, cat, lang))
+    if not folders:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📁 Create Folder", callback_data="admin_create_folder")],
+            [InlineKeyboardButton(text="❌ Close", callback_data="admin_close_menu")]
+        ])
+        await callback.message.edit_text("কোনো ফোল্ডার পাওয়া যায়নি।", reply_markup=kb)
+    else:
+        buttons = []
+        for f in folders:
+            buttons.append([InlineKeyboardButton(text=f"📁 {f['name']}", callback_data=f"admin_select_folder:{f['id']}")])
+        buttons.append([InlineKeyboardButton(text="➕ Create Folder", callback_data="admin_create_folder")])
+        buttons.append([InlineKeyboardButton(text="❌ Close", callback_data="admin_close_menu")])
+        await callback.message.edit_text("ফোল্ডার তালিকা থেকে সিলেক্ট করুন:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("admin_select_folder:"), F.from_user.id == ADMIN_CHAT_ID)
+async def process_admin_folder_selection(callback: CallbackQuery, state: FSMContext):
+    folder_id = int(callback.data.split(":")[1])
+    await state.update_data(folder_id=folder_id)
+    await callback.answer()
+    await show_confirm_preview(callback.message, state, is_callback=True)
+
+@router.callback_query(F.data == "admin_close_menu", F.from_user.id == ADMIN_CHAT_ID)
+async def process_admin_close_menu(callback: CallbackQuery, state: FSMContext):
+    await callback.message.delete()
+    await state.clear()
+    await callback.answer("বাতিল করা হয়েছে।")
+
+async def show_confirm_preview(event_msg: Message, state: FSMContext, is_callback: bool = False):
     await state.set_state(AdminStates.waiting_confirm)
     data = await state.get_data()
-    preview = f"📋 <b>CONFIRM PUBLISH</b>\n\n📂 Category: {CATEGORY_NAMES[data['category']]}\n📄 Files: {len(data['files'])}\n📝 Title: <b>{esc(data['title'])}</b>\n🖼 Thumbnail: {'✅' if thumb else '❌'}\n\nPublish to: <b>{CATEGORY_CHANNELS[data['category']]}</b> + <b>{MAIN_CHANNEL}</b>"
+    thumb = data.get("thumb")
+    
+    folder_info = "None"
+    if data.get("folder_id"):
+        f_row = await fetchone("SELECT name FROM admin_folders WHERE id=?", (data["folder_id"],))
+        if f_row: folder_info = f_row["name"]
+
+    lang_info = LANGUAGES.get(data.get("language"), "N/A")
+
+    preview = f"📋 <b>CONFIRM PUBLISH</b>\n\n📂 Category: {CATEGORY_NAMES[data['category']]}\n🌐 Language: {lang_info}\n📁 Folder: {folder_info}\n📄 Files: {len(data['files'])}\n📝 Title: <b>{esc(data['title'])}</b>\n🖼 Thumbnail: {'✅' if thumb else '❌'}\n\nPublish to: <b>{CATEGORY_CHANNELS[data['category']]}</b> + <b>{MAIN_CHANNEL}</b>"
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🚀 PUBLISH NOW", callback_data="pub_confirm")], [InlineKeyboardButton(text="❌ CANCEL", callback_data="admin_panel")]])
+    
     if thumb:
         try:
-            await message.answer_photo(thumb, caption=preview, reply_markup=kb)
+            await event_msg.answer_photo(thumb, caption=preview, reply_markup=kb)
             return
         except: pass
-    await message.answer(preview, reply_markup=kb)
+        
+    if is_callback:
+        await safe_edit(event_msg, preview, reply_markup=kb)
+    else:
+        await event_msg.answer(preview, reply_markup=kb)
 
 @router.callback_query(F.data == "pub_confirm", F.from_user.id == ADMIN_CHAT_ID)
 async def cb_pub_confirm(call: CallbackQuery, state: FSMContext):
@@ -1480,10 +1374,13 @@ async def cb_pub_confirm(call: CallbackQuery, state: FSMContext):
     files = data.get("files", [])
     title = data.get("title", "Untitled")
     category = data.get("category", "movie")
+    language = data.get("language", "")
     thumb = data.get("thumb")
+    folder_id = data.get("folder_id", 0)
+    
     if not files: return
     code = await unique_code()
-    await execute("INSERT INTO posts (code, title, category, owner_id, is_admin, thumbnail_id, created_at, published) VALUES (?, ?, ?, ?, 1, ?, ?, 1)", (code, title, category, ADMIN_CHAT_ID, thumb, int(time.time())))
+    await execute("INSERT INTO posts (code, title, category, language, owner_id, is_admin, thumbnail_id, created_at, published, folder_id) VALUES (?, ?, ?, ?, ?, 1, ?, ?, 1, ?)", (code, title, category, language, ADMIN_CHAT_ID, thumb, int(time.time()), folder_id))
     for i, f in enumerate(files):
         await execute("INSERT INTO post_files (post_code, file_id, file_type, file_name, order_idx) VALUES (?, ?, ?, ?, ?)", (code, f["id"], f["type"], f["name"], i))
     
