@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MovieVerse Bot — Updated: App Removed, Viral Folders Added, Auto-Delete, Alternating Ads & 24/7 Hosting
+MovieVerse Bot — Updated: App Removed, Viral Folders Added, Auto-Delete, Alternating Ads, 24/7 Hosting, Folder Delete & Move
 """
 
 import asyncio
@@ -52,7 +52,6 @@ ANTI_SPAM_COOLDOWN = 1.0
 # নতুন মিনি অ্যাপের ডিরেক্ট লিংক
 MINI_APP_LINK_BASE = "https://t.me/Nsyt83325bot_bot/httpsyhcff5t53tu6botblogspot?startapp=GET_"
 
-# অ্যাপ চ্যানেল বাদ দিয়ে বাকি ৩টি চ্যানেল কনফিগার করা হলো
 CATEGORY_CHANNELS = {
     "movie": "@CineVaultHD9",
     "viral": "@ViralVideoAll999",
@@ -337,19 +336,6 @@ async def set_rating(code: str, user_id: int, stars: int) -> bool:
         logger.error(f"set_rating: {e}")
         return False
 
-async def get_and_inc_click_count(user_id: int, post_code: str) -> int:
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT click_count FROM user_post_clicks WHERE user_id=? AND post_code=?", (user_id, post_code))
-        row = await cur.fetchone()
-        if row:
-            count = row[0] + 1
-            await db.execute("UPDATE user_post_clicks SET click_count=? WHERE user_id=? AND post_code=?", (count, user_id, post_code))
-        else:
-            count = 1
-            await db.execute("INSERT INTO user_post_clicks (user_id, post_code, click_count) VALUES (?, ?, ?)", (user_id, post_code, count))
-        await db.commit()
-        return count
-
 async def get_bot_username() -> str:
     global BOT_USERNAME_CACHE
     if not BOT_USERNAME_CACHE:
@@ -428,6 +414,7 @@ def main_menu_kb(is_admin: bool = False) -> InlineKeyboardMarkup:
 def admin_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📤 PUBLISH CONTENT", callback_data="admin_publish")],
+        [InlineKeyboardButton(text="📁 MANAGE FOLDERS", callback_data="admin_manage_folders")],
         [InlineKeyboardButton(text="📥 RESTORE BACKUP", callback_data="admin_restore")],
         [InlineKeyboardButton(text="⚙️ SETTINGS", callback_data="admin_settings")],
         [InlineKeyboardButton(text="🚫 BAN", callback_data="admin_ban"), InlineKeyboardButton(text="✅ UNBAN", callback_data="admin_unban")],
@@ -703,7 +690,6 @@ async def cb_browse(call: CallbackQuery):
     rows = await fetchall("SELECT category, COUNT(*) as c FROM posts WHERE published=1 AND deleted=0 GROUP BY category")
     counts = {r["category"]: r["c"] for r in rows}
     kb = []
-    # অ্যাপ ক্যাটাগরি বাদ দেওয়া হয়েছে
     for cat in ("movie", "viral", "anime"):
         kb.append([InlineKeyboardButton(text=f"{CATEGORY_NAMES[cat]} ({counts.get(cat, 0)})", callback_data=f"cat:{cat}")])
     kb.append([InlineKeyboardButton(text="🏠 MAIN MENU", callback_data="main")])
@@ -1150,7 +1136,7 @@ async def wd_address(message: Message, state: FSMContext):
     except: pass
 
 # =========================================================================
-# ADMIN PANEL
+# ADMIN PANEL & FOLDER MANAGEMENT (DELETE & MOVE ADDED)
 # =========================================================================
 @router.message(Command("admin"), F.from_user.id == ADMIN_CHAT_ID)
 async def cmd_admin(message: Message):
@@ -1159,6 +1145,52 @@ async def cmd_admin(message: Message):
 @router.callback_query(F.data == "admin_panel", F.from_user.id == ADMIN_CHAT_ID)
 async def cb_admin_panel(call: CallbackQuery):
     await safe_edit(call, "⚙️ <b>ADMIN PANEL</b>", reply_markup=admin_menu_kb())
+
+@router.callback_query(F.data == "admin_manage_folders", F.from_user.id == ADMIN_CHAT_ID)
+async def cb_manage_folders(call: CallbackQuery):
+    kb = []
+    for cat in ("movie", "viral", "anime"):
+        kb.append([InlineKeyboardButton(text=f"📁 {CATEGORY_NAMES[cat]} Folders", callback_data=f"admfoldcat:{cat}")])
+    kb.append([InlineKeyboardButton(text="🔙 BACK TO ADMIN", callback_data="admin_panel")])
+    await safe_edit(call, "📁 <b>MANAGE FOLDERS</b>\n\nSelect category to view/delete folders or move posts:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+@router.callback_query(F.data.startswith("admfoldcat:"), F.from_user.id == ADMIN_CHAT_ID)
+async def cb_admfoldcat(call: CallbackQuery):
+    cat = call.data.split(":", 1)[1]
+    kb = []
+    for lang_code, lang_name in LANGUAGES.items():
+        kb.append([InlineKeyboardButton(text=lang_name, callback_data=f"admfoldlang:{cat}:{lang_code}")])
+    kb.append([InlineKeyboardButton(text="🔙 BACK", callback_data="admin_manage_folders")])
+    await safe_edit(call, f"{CATEGORY_NAMES[cat]} — 🌐 <b>Select Language:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+@router.callback_query(F.data.startswith("admfoldlang:"), F.from_user.id == ADMIN_CHAT_ID)
+async def cb_admfoldlang(call: CallbackQuery):
+    parts = call.data.split(":")
+    cat, lang = parts[1], parts[2]
+    folders = await fetchall("SELECT * FROM admin_folders WHERE category=? AND language=?", (cat, lang))
+    
+    kb = []
+    if folders:
+        for f in folders:
+            kb.append([InlineKeyboardButton(text=f"📁 {f['name']} (Delete)", callback_data=f"admdelefold:{f['id']}")])
+    else:
+        kb.append([InlineKeyboardButton(text="⚠️ No folders found", callback_data="noop")])
+    kb.append([InlineKeyboardButton(text="🔙 BACK", callback_data=f"admfoldcat:{cat}")])
+    await safe_edit(call, f"📁 <b>Delete Folders ({CATEGORY_NAMES[cat]} - {LANGUAGES[lang]}):</b>\n\nClicking a folder will delete it and unbind its posts.", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+@router.callback_query(F.data.startswith("admdelefold:"), F.from_user.id == ADMIN_CHAT_ID)
+async def cb_adm_delete_folder(call: CallbackQuery):
+    folder_id = int(call.data.split(":", 1)[1])
+    folder = await fetchone("SELECT * FROM admin_folders WHERE id=?", (folder_id,))
+    if not folder:
+        await call.answer("Folder not found.", show_alert=True)
+        return
+    # Unbind posts from this folder
+    await execute("UPDATE posts SET folder_id=0 WHERE folder_id=?", (folder_id,))
+    # Delete folder
+    await execute("DELETE FROM admin_folders WHERE id=?", (folder_id,))
+    await call.answer(f"✅ Folder '{folder['name']}' deleted successfully!", show_alert=True)
+    await cb_manage_folders(call)
 
 @router.message(Command("backup"), F.from_user.id == ADMIN_CHAT_ID)
 async def cmd_backup(message: Message):
@@ -1409,6 +1441,53 @@ async def cb_pub_confirm(call: CallbackQuery, state: FSMContext):
     await state.clear()
     await safe_edit(call, f"✅ <b>PUBLISHED!</b>\n\n🔗 Link: <code>{link}</code>\n\nPosted to: {', '.join(posted) if posted else '❌ none'}", reply_markup=back_kb("admin_panel"))
 
+# =========================================================================
+# MOVE POST TO ANOTHER FOLDER (ADMIN FEATURE)
+# =========================================================================
+@router.callback_query(F.data == "admin_posts", F.from_user.id == ADMIN_CHAT_ID)
+async def cb_all_posts(call: CallbackQuery):
+    rows = await fetchall("SELECT * FROM posts WHERE deleted=0 ORDER BY created_at DESC LIMIT 30")
+    if not rows:
+        await call.answer("No posts.", show_alert=True)
+        return
+    kb = []
+    for p in rows:
+        kb.append([InlineKeyboardButton(text=f"📁 Move: {truncate(p['title'], 25)}", callback_data=f"adm_movepost:{p['code']}")])
+    kb.append([InlineKeyboardButton(text="🔙 BACK", callback_data="admin_panel")])
+    await safe_edit(call, "📄 <b>ALL POSTS</b>\n\nClick a post to <b>Move</b> its folder:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+@router.callback_query(F.data.startswith("adm_movepost:"), F.from_user.id == ADMIN_CHAT_ID)
+async def cb_adm_move_post(call: CallbackQuery):
+    code = call.data.split(":", 1)[1]
+    post = await get_post(code)
+    if not post:
+        await call.answer("Post not found.", show_alert=True)
+        return
+    
+    cat = post["category"]
+    lang = post["language"]
+    folders = await fetchall("SELECT * FROM admin_folders WHERE category=? AND language=?", (cat, lang))
+    
+    kb = []
+    for f in folders:
+        marker = " ✅" if f["id"] == post["folder_id"] else ""
+        kb.append([InlineKeyboardButton(text=f"📁 {f['name']}{marker}", callback_data=f"adm_setfolder:{code}:{f['id']}")])
+    
+    direct_marker = " ✅" if post["folder_id"] == 0 else ""
+    kb.append([InlineKeyboardButton(text=f"📂 No Folder (Direct){direct_marker}", callback_data=f"adm_setfolder:{code}:0")])
+    kb.append([InlineKeyboardButton(text="🔙 BACK", callback_data="admin_posts")])
+    
+    await safe_edit(call, f"📦 <b>Move Post:</b> <i>{esc(post['title'])}</i>\n\nSelect target folder:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+@router.callback_query(F.data.startswith("adm_setfolder:"), F.from_user.id == ADMIN_CHAT_ID)
+async def cb_adm_set_folder(call: CallbackQuery):
+    parts = call.data.split(":")
+    code, target_folder_id = parts[1], int(parts[2])
+    
+    await execute("UPDATE posts SET folder_id=? WHERE code=?", (target_folder_id, code))
+    await call.answer("✅ Post folder updated successfully!", show_alert=True)
+    await cb_all_posts(call)
+
 @router.callback_query(F.data == "admin_restore", F.from_user.id == ADMIN_CHAT_ID)
 async def cb_restore(call: CallbackQuery, state: FSMContext):
     await state.set_state(AdminStates.waiting_restore_db)
@@ -1508,17 +1587,6 @@ async def cb_wd_reject(call: CallbackQuery):
     try: await bot.send_message(wd["user_id"], f"❌ Withdrawal #{wid} rejected. Amount refunded.")
     except: pass
     await safe_edit(call, f"❌ Rejected #{wid}", reply_markup=back_kb("admin_panel"))
-
-@router.callback_query(F.data == "admin_posts", F.from_user.id == ADMIN_CHAT_ID)
-async def cb_all_posts(call: CallbackQuery):
-    rows = await fetchall("SELECT * FROM posts WHERE deleted=0 ORDER BY created_at DESC LIMIT 30")
-    if not rows:
-        await call.answer("No posts.", show_alert=True)
-        return
-    text = "📄 <b>ALL POSTS (30)</b>\n\n"
-    for p in rows:
-        text += f"{esc(truncate(p['title'], 25))} | 👁 {p['views']}\n"
-    await safe_edit(call, text, reply_markup=back_kb("admin_panel"))
 
 @router.callback_query(F.data == "admin_users", F.from_user.id == ADMIN_CHAT_ID)
 async def cb_all_users(call: CallbackQuery):
