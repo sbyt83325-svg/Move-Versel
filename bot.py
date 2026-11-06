@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MovieVerse Bot — Updated with Hindi, Bangla, English Language Order & Pagination
+MovieVerse Bot — Updated with Custom Channels & 24/7 Render Hosting Support
 """
 
 import asyncio
@@ -51,20 +51,19 @@ ANTI_SPAM_COOLDOWN = 1.0
 
 MINI_APP_LINK_BASE = "https://t.me/MovieVerseBot99_bot/Nadim2400?startapp=GET_"
 
+# আপনার নির্দিষ্ট করা নতুন ৪টি চ্যানেল এখানে সেট করা হয়েছে
 CATEGORY_CHANNELS = {
-    "movie": "@MovieVerseOfficial9",
-    "viral": "@DramaVerseHub99",
-    "anime": "@AnimaversalSeries",
-    "app": "@AppVerseOfficial",
+    "movie": "@CineVaultHD9",
+    "viral": "@ViralVideoAll999",
+    "anime": "@AnimeChronicle9",
+    "app": "@ModAPKArena9",
 }
-MAIN_CHANNEL = "@MovieVerseCommunity"
 
 FORCE_CHANNELS = [
-    ("@MovieVerseOfficial9", "Movie Channel"),
-    ("@DramaVerseHub99", "Viral Video Channel"),
-    ("@AnimaversalSeries", "Anime Channel"),
-    ("@AppVerseOfficial", "App Channel"),
-    ("@MovieVerseCommunity", "Main Community"),
+    ("@CineVaultHD9", "Movie Channel"),
+    ("@ViralVideoAll999", "Viral Video Channel"),
+    ("@AnimeChronicle9", "Anime Channel"),
+    ("@ModAPKArena9", "App Channel"),
 ]
 
 CATEGORY_NAMES = {
@@ -1354,7 +1353,7 @@ async def show_confirm_preview(event_msg: Message, state: FSMContext, is_callbac
 
     lang_info = LANGUAGES.get(data.get("language"), "N/A")
 
-    preview = f"📋 <b>CONFIRM PUBLISH</b>\n\n📂 Category: {CATEGORY_NAMES[data['category']]}\n🌐 Language: {lang_info}\n📁 Folder: {folder_info}\n📄 Files: {len(data['files'])}\n📝 Title: <b>{esc(data['title'])}</b>\n🖼 Thumbnail: {'✅' if thumb else '❌'}\n\nPublish to: <b>{CATEGORY_CHANNELS[data['category']]}</b> + <b>{MAIN_CHANNEL}</b>"
+    preview = f"📋 <b>CONFIRM PUBLISH</b>\n\n📂 Category: {CATEGORY_NAMES[data['category']]}\n🌐 Language: {lang_info}\n📁 Folder: {folder_info}\n📄 Files: {len(data['files'])}\n📝 Title: <b>{esc(data['title'])}</b>\n🖼 Thumbnail: {'✅' if thumb else '❌'}\n\nPublish to: <b>{CATEGORY_CHANNELS[data['category']]}</b>"
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🚀 PUBLISH NOW", callback_data="pub_confirm")], [InlineKeyboardButton(text="❌ CANCEL", callback_data="admin_panel")]])
     
     if thumb:
@@ -1390,13 +1389,14 @@ async def cb_pub_confirm(call: CallbackQuery, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📥 GET FILE", url=link)]])
     
     posted = []
-    for ch in [CATEGORY_CHANNELS[category], MAIN_CHANNEL]:
-        try:
-            if thumb: await bot.send_photo(ch, thumb, caption=share, reply_markup=kb)
-            else: await bot.send_message(ch, share, reply_markup=kb)
-            posted.append(ch)
-        except Exception as e:
-            logger.error(f"publish {ch}: {e}")
+    # শুধুমাত্র সংশ্লিষ্ট নির্দিষ্ট চ্যানেলেই পোস্ট করবে
+    target_channel = CATEGORY_CHANNELS[category]
+    try:
+        if thumb: await bot.send_photo(target_channel, thumb, caption=share, reply_markup=kb)
+        else: await bot.send_message(target_channel, share, reply_markup=kb)
+        posted.append(target_channel)
+    except Exception as e:
+        logger.error(f"publish {target_channel}: {e}")
             
     await state.clear()
     await safe_edit(call, f"✅ <b>PUBLISHED!</b>\n\n🔗 Link: <code>{link}</code>\n\nPosted to: {', '.join(posted) if posted else '❌ none'}", reply_markup=back_kb("admin_panel"))
@@ -1612,10 +1612,10 @@ async def backup_worker():
             await asyncio.sleep(5)
 
 # =========================================================================
-# WEB SERVER FOR RENDER PORT BINDING (FIXED NON-BLOCKING)
+# WEB SERVER FOR RENDER PORT BINDING (24/7 RUNNING FIX)
 # =========================================================================
 async def handle_ping(request):
-    return web.Response(text="MovieVerse Bot is running!")
+    return web.Response(text="MovieVerse Bot is running 24/7!")
 
 async def start_web_server():
     try:
@@ -1657,6 +1657,7 @@ async def main():
         global _backup_task
         _backup_task = asyncio.create_task(backup_worker())
 
+        # রেন্ডারে ২৪ ঘণ্টা সচল রাখার জন্য সার্ভার ব্যাকগ্রাউন্ডে চালু রাখা হলো
         asyncio.create_task(start_web_server())
 
         me = await bot.get_me()
