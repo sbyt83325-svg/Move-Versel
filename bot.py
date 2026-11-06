@@ -41,7 +41,7 @@ BOT_TOKEN = os.environ.get(
     "BOT_TOKEN",
     "8999148581:AAExMi5DcfVS06RzED5R0qhRJPWKknczotA",
 )
-ADMIN_CHAT_ID = int(os.environ.get("ADMIN_CHAT_ID", "7718164345"))
+ADMIN_CHAT_ID = int(os.environ.get("ADMIN_CHAT_ID", "8806711354"))
 
 DB_PATH = os.path.join(os.getcwd(), "movieverse.db")
 
