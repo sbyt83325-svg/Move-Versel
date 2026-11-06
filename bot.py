@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MovieVerse Bot — Updated with Custom Channels & 24/7 Render Hosting Support
+MovieVerse Bot — Updated: App Removed, Viral Folders Added, Auto-Delete & 24/7 Hosting
 """
 
 import asyncio
@@ -45,36 +45,32 @@ ADMIN_CHAT_ID = int(os.environ.get("ADMIN_CHAT_ID", "7718164345"))
 
 DB_PATH = os.path.join(os.getcwd(), "movieverse.db")
 
-AUTO_DELETE_SECONDS = 1200
+AUTO_DELETE_SECONDS = 1200  # ২০ মিনিট পর মেসেজ ডিলিট
 BACKUP_INTERVAL_SECONDS = 60
 ANTI_SPAM_COOLDOWN = 1.0
 
 MINI_APP_LINK_BASE = "https://t.me/MovieVerseBot99_bot/Nadim2400?startapp=GET_"
 
-# আপনার নির্দিষ্ট করা নতুন ৪টি চ্যানেল এখানে সেট করা হয়েছে
+# অ্যাপ চ্যানেল বাদ দিয়ে বাকি ৩টি চ্যানেল কনফিগার করা হলো
 CATEGORY_CHANNELS = {
     "movie": "@CineVaultHD9",
     "viral": "@ViralVideoAll999",
     "anime": "@AnimeChronicle9",
-    "app": "@ModAPKArena9",
 }
 
 FORCE_CHANNELS = [
     ("@CineVaultHD9", "Movie Channel"),
     ("@ViralVideoAll999", "Viral Video Channel"),
     ("@AnimeChronicle9", "Anime Channel"),
-    ("@ModAPKArena9", "App Channel"),
 ]
 
 CATEGORY_NAMES = {
     "movie": "🎬 Movie",
     "viral": "🔥 Viral Video",
     "anime": "🎌 Anime",
-    "app": "📱 App",
     "private": "🔒 Private",
 }
 
-# নির্দিষ্ট ক্রমানুসারে ভাষা: প্রথমে হিন্দি, তারপর বাংলা, তারপর ইংলিশ
 LANGUAGES = {
     "hindi": "🇮🇳 Hindi",
     "bangla": "🇧🇩 Bangla",
@@ -87,7 +83,7 @@ DEFAULT_MIN_WITHDRAW = 10.0
 DAILY_BONUS = 0.001
 MAX_USER_FILES = 5
 MAX_ADMIN_FILES = 100
-ITEMS_PER_PAGE = 15  # প্রতি পেজে ১৫টি উপাদান শো হবে
+ITEMS_PER_PAGE = 15
 
 logging.basicConfig(
     level=logging.INFO,
@@ -691,7 +687,8 @@ async def cb_browse(call: CallbackQuery):
     rows = await fetchall("SELECT category, COUNT(*) as c FROM posts WHERE published=1 AND deleted=0 GROUP BY category")
     counts = {r["category"]: r["c"] for r in rows}
     kb = []
-    for cat in ("movie", "viral", "anime", "app"):
+    # অ্যাপ ক্যাটাগরি বাদ দেওয়া হয়েছে
+    for cat in ("movie", "viral", "anime"):
         kb.append([InlineKeyboardButton(text=f"{CATEGORY_NAMES[cat]} ({counts.get(cat, 0)})", callback_data=f"cat:{cat}")])
     kb.append([InlineKeyboardButton(text="🏠 MAIN MENU", callback_data="main")])
     await safe_edit(call, "🎬 <b>BROWSE CATEGORIES</b>\n\nSelect category:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
@@ -699,15 +696,14 @@ async def cb_browse(call: CallbackQuery):
 @router.callback_query(F.data.startswith("cat:"))
 async def cb_category(call: CallbackQuery):
     cat = call.data.split(":", 1)[1]
-    if cat in ("movie", "anime"):
-        # ল্যাঙ্গুয়েজ সিলেকশন অপশন (হিন্দি, বাংলা, ইংলিশ ক্রমানুসারে)
+    # এখন মুভি, অ্যানিমে ও ভাইরাল ভিডিও তিনটির জন্যই ভাষা ও ফোল্ডার সিস্টেম থাকবে
+    if cat in ("movie", "anime", "viral"):
         kb = []
         for lang_code, lang_name in LANGUAGES.items():
             kb.append([InlineKeyboardButton(text=lang_name, callback_data=f"browselang:{cat}:{lang_code}")])
         kb.append([InlineKeyboardButton(text="🔙 BACK", callback_data="browse")])
         await safe_edit(call, f"{CATEGORY_NAMES[cat]} — 🌐 <b>Select Language:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
     else:
-        # Viral Video & App — সরাসরি পোস্ট লিস্ট (Page 1)
         await show_category_posts(call, cat=cat, lang="", folder_id=0, page=1)
 
 @router.callback_query(F.data.startswith("browselang:"))
@@ -715,7 +711,6 @@ async def cb_browse_lang(call: CallbackQuery):
     parts = call.data.split(":")
     cat, lang = parts[1], parts[2]
     
-    # উক্ত ক্যাটাগরি ও ল্যাঙ্গুয়েজের ফোল্ডারসমূহ
     folders = await fetchall("SELECT * FROM admin_folders WHERE category=? AND language=?", (cat, lang))
     if folders:
         kb = []
@@ -725,7 +720,6 @@ async def cb_browse_lang(call: CallbackQuery):
         kb.append([InlineKeyboardButton(text="🔙 BACK", callback_data=f"cat:{cat}")])
         await safe_edit(call, f"{CATEGORY_NAMES[cat]} ({LANGUAGES[lang]}) — 📁 <b>Select Folder:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
     else:
-        # কোনো ফোল্ডার না থাকলে সরাসরি পোস্ট দেখাবে
         await show_category_posts(call, cat=cat, lang=lang, folder_id=0, page=1)
 
 @router.callback_query(F.data.startswith("browsefolder:"))
@@ -762,11 +756,9 @@ async def show_category_posts(call: CallbackQuery, cat: str, lang: str, folder_i
     page_posts = all_posts[start_idx:end_idx]
 
     kb = []
-    # পোস্টের লিস্ট
     for p in page_posts:
         kb.append([InlineKeyboardButton(text=f"🎬 {truncate(p['title'], 25)} (👁 {p['views']})", callback_data=f"view:{p['code']}")])
 
-    # পেজিনেশন কিবোর্ড (Previous | Main Menu | Next)
     nav_buttons = []
     if page > 1:
         nav_buttons.append(InlineKeyboardButton(text="⬅️ Previous", callback_data=f"browsefolder:{cat}:{lang}:{folder_id}:{page-1}"))
@@ -829,10 +821,12 @@ async def show_post_card(chat_id: int, code: str):
     kb = post_card_kb(code)
     if post.get("thumbnail_id"):
         try:
-            await bot.send_photo(chat_id, post["thumbnail_id"], caption=text, reply_markup=kb)
+            sent_msg = await bot.send_photo(chat_id, post["thumbnail_id"], caption=text, reply_markup=kb)
+            asyncio.create_task(_auto_delete(sent_msg.chat.id, sent_msg.message_id))
             return
         except: pass
-    await bot.send_message(chat_id, text, reply_markup=kb)
+    sent_msg = await bot.send_message(chat_id, text, reply_markup=kb)
+    asyncio.create_task(_auto_delete(sent_msg.chat.id, sent_msg.message_id))
 
 @router.callback_query(F.data.startswith("view:"))
 async def cb_view(call: CallbackQuery):
@@ -892,7 +886,8 @@ async def handle_web_app_data(message: Message):
         await message.answer("❌ Post not found. It may have been deleted.")
         return
 
-    await message.answer("✅ <b>Confirming...</b>")
+    conf_msg = await message.answer("✅ <b>Confirming...</b>")
+    asyncio.create_task(_auto_delete(conf_msg.chat.id, conf_msg.message_id))
     await asyncio.sleep(0.4)
     await _deliver(message.chat.id, code, message.from_user.id)
 
@@ -908,7 +903,8 @@ async def handle_pasted_code(message: Message, state: FSMContext):
         await message.answer("❌ Invalid code or video deleted.")
         return
     
-    await message.answer("✅ <b>Code Verified!</b> Sending your file...")
+    v_msg = await message.answer("✅ <b>Code Verified!</b> Sending your file...")
+    asyncio.create_task(_auto_delete(v_msg.chat.id, v_msg.message_id))
     await _deliver(message.chat.id, code, message.from_user.id)
 
 async def _deliver(chat_id: int, code: str, user_id: int):
@@ -923,7 +919,9 @@ async def _deliver(chat_id: int, code: str, user_id: int):
         if not post.get("is_admin"):
             await add_balance(post["owner_id"], reward)
     
-    await bot.send_message(chat_id, f"📥 <b>{esc(post['title'])}</b>\n\nSending {len(files)} file(s). ⚠️ Auto-delete in 20 min.")
+    info_msg = await bot.send_message(chat_id, f"📥 <b>{esc(post['title'])}</b>\n\nSending {len(files)} file(s). ⚠️ Auto-delete in 20 min.")
+    asyncio.create_task(_auto_delete(info_msg.chat.id, info_msg.message_id))
+
     for f in files:
         try:
             sent = None
@@ -1182,7 +1180,6 @@ async def cb_publish(call: CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="🎬 MOVIE", callback_data="pubcat:movie")],
         [InlineKeyboardButton(text="🔥 VIRAL VIDEO", callback_data="pubcat:viral")],
         [InlineKeyboardButton(text="🎌 ANIME", callback_data="pubcat:anime")],
-        [InlineKeyboardButton(text="📱 APP", callback_data="pubcat:app")],
         [InlineKeyboardButton(text="❌ CANCEL", callback_data="admin_panel")],
     ])
     await safe_edit(call, "📤 <b>PUBLISH CONTENT</b>\n\nSelect category:", reply_markup=kb)
@@ -1246,14 +1243,13 @@ async def admin_recv_thumb(message: Message, state: FSMContext):
     data = await state.get_data()
     cat = data.get("category")
 
-    # Movie & Anime হলে ল্যাঙ্গুয়েজ সিলেক্ট করতে হবে (হিন্দি, বাংলা, ইংলিশ ক্রমানুসারে)
-    if cat in ("movie", "anime"):
+    # এখন Movie, Anime এবং Viral তিনটির জন্যই ল্যাঙ্গুয়েজ ও ফোল্ডার সিলেকশন থাকবে
+    if cat in ("movie", "anime", "viral"):
         kb = []
         for lang_code, lang_name in LANGUAGES.items():
             kb.append([InlineKeyboardButton(text=lang_name, callback_data=f"setpublang:{lang_code}")])
         await message.answer("🌐 Select Language for this content:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
     else:
-        # Viral Video & App হলে কোনো ফোল্ডার বা ল্যাঙ্গুয়েজ সিলেক্ট করতে হবে না
         await show_confirm_preview(message, state)
 
 @router.callback_query(F.data.startswith("setpublang:"), F.from_user.id == ADMIN_CHAT_ID)
@@ -1264,7 +1260,6 @@ async def cb_set_pub_lang(call: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     cat = data.get("category")
     
-    # উক্ত ল্যাঙ্গুয়েজ ও ক্যাটাগরির ফোল্ডারসমূহ
     folders = await fetchall("SELECT * FROM admin_folders WHERE admin_id=? AND category=? AND language=?", (ADMIN_CHAT_ID, cat, lang_code))
     
     if not folders:
@@ -1287,7 +1282,7 @@ async def cb_set_pub_lang(call: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "admin_create_folder", F.from_user.id == ADMIN_CHAT_ID)
 async def process_admin_create_folder(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AdminStates.waiting_folder_name)
-    await callback.message.edit_text("✏️ নতুন ফোল্ডারের নামটি লিখে পাঠান (যেমন: Naruto):")
+    await callback.message.edit_text("✏️ নতুন ফোল্ডারের নামটি লিখে পাঠান:")
     await callback.answer()
 
 @router.message(AdminStates.waiting_folder_name, F.from_user.id == ADMIN_CHAT_ID)
@@ -1389,7 +1384,6 @@ async def cb_pub_confirm(call: CallbackQuery, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📥 GET FILE", url=link)]])
     
     posted = []
-    # শুধুমাত্র সংশ্লিষ্ট নির্দিষ্ট চ্যানেলেই পোস্ট করবে
     target_channel = CATEGORY_CHANNELS[category]
     try:
         if thumb: await bot.send_photo(target_channel, thumb, caption=share, reply_markup=kb)
@@ -1657,7 +1651,6 @@ async def main():
         global _backup_task
         _backup_task = asyncio.create_task(backup_worker())
 
-        # রেন্ডারে ২৪ ঘণ্টা সচল রাখার জন্য সার্ভার ব্যাকগ্রাউন্ডে চালু রাখা হলো
         asyncio.create_task(start_web_server())
 
         me = await bot.get_me()
