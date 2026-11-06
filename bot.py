@@ -531,15 +531,7 @@ async def cmd_start(message: Message, state: FSMContext):
 
     if payload and payload.startswith("GET_"):
         code = payload[4:]
-        count = await get_and_inc_click_count(uid, code)
-        if count % 2 != 0:
-            # বিজোড় বার (১ম, ৩য়, ৫ম...): ডাইরেক্ট ভিডিও ডেলিভারি
-            d_msg = await message.answer("⚡ <b>Direct Access Granted!</b> Sending your video...")
-            asyncio.create_task(_auto_delete(d_msg.chat.id, d_msg.message_id))
-            await _deliver(message.chat.id, code, uid)
-        else:
-            # জোড় বার (২য়, ৪র্থ, ৬ষ্ঠ...): ওয়াচ অ্যাড বাধ্যতামূলক
-            await show_post_card(message.chat.id, code)
+        await show_post_card(message.chat.id, code)
         return
 
     await message.answer(
