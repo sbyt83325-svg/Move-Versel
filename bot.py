@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MovieVerse Bot — Fully Fixed & Enhanced Edition
+MovieVerse Bot — Fully Updated Edition
 Includes:
- - Multi-language AI Smart Search (Season/Episode extraction)
- - Fixed 60-Second Auto Backup & DB Restore Handler
- - File Move & Copy between Folders/Seasons
- - All User & Admin Callbacks fully working
- - Fixed 24/7 Web Server Integration
+ - Dynamic Sliding Page Pagination (Scrollable Number Pagination)
+ - Folder Edit (Rename), Sub-folder Add & Remove
+ - File Move & Copy between Folders/Sub-folders
+ - Multi-language AI Smart Search
+ - 60-Second Auto Backup & Web Server
 """
 
 import asyncio
@@ -52,8 +52,8 @@ AI_API_KEY = "AQ.Ab8RN6KQBJ1Br-6ih2Wz3CWx3zl--IHUWubd3ErCj6sULshNhQ"
 
 DB_PATH = os.path.join(os.getcwd(), "movieverse.db")
 
-AUTO_DELETE_SECONDS = 1200  # ২০ মিনিট
-BACKUP_INTERVAL_SECONDS = 60  # প্রতি ১ মিনিট (৬০ সেকেন্ড) পর পর ব্যাকআপ
+AUTO_DELETE_SECONDS = 1200
+BACKUP_INTERVAL_SECONDS = 60
 ANTI_SPAM_COOLDOWN = 0.5
 
 MINI_APP_LINK_BASE = "https://t.me/Nsyt83325bot_bot/httpsyhcff5t53tu6botblogspot?startapp=GET_"
@@ -123,6 +123,8 @@ class AdminStates(StatesGroup):
     waiting_folder_name = State()
     waiting_subfolder_name = State()
     waiting_admin_add = State()
+    waiting_edit_folder = State()
+    waiting_add_sub_dynamic = State()
 
 class UserStates(StatesGroup):
     uploading_files = State()
@@ -200,10 +202,7 @@ async def unique_code() -> str:
 # AI MULTI-LANGUAGE SMART SEARCH ENGINE
 # =========================================================================
 def parse_season_episode(text: str):
-    """লেখা থেকে সিজন ও পর্বের নম্বর ফিল্টার করার স্মার্ট পার্সার"""
     text_lower = text.lower()
-    
-    # বাংলা সংখ্যা রূপান্তর
     bn_digits = {'০': '0', '১': '1', '২': '2', '৩': '3', '৪': '4', '৫': '5', '৬': '6', '৭': '7', '৮': '8', '৯': '9'}
     for b, e in bn_digits.items():
         text_lower = text_lower.replace(b, e)
@@ -211,7 +210,6 @@ def parse_season_episode(text: str):
     season = None
     episode = None
     
-    # সিজন এবং পর্বের প্যাটার্ন ম্যাচিং
     s_match = re.search(r'(?:season|s|সিজন)\s*[:=\-]?\s*(\d+)', text_lower)
     if s_match:
         season = int(s_match.group(1))
@@ -220,13 +218,11 @@ def parse_season_episode(text: str):
     if e_match:
         episode = int(e_match.group(1))
         
-    # সাধারণ সংখ্যা ফিল্টারিং (যেমন: নারুতো ১০)
     if not episode:
         nums = re.findall(r'\b\d+\b', text_lower)
         if nums and not season:
             episode = int(nums[0])
             
-    # মূল নাম বের করা
     clean_title = re.sub(r'(?:season|s|সিজন|episode|ep|e|পর্ব|এপিসোড)\s*[:=\-]?\s*\d+', '', text_lower)
     clean_title = re.sub(r'\b\d+\b', '', clean_title).strip()
     
@@ -235,30 +231,23 @@ def parse_season_episode(text: str):
 async def ai_multi_language_search(user_query: str) -> List[dict]:
     clean_q, req_s, req_e = parse_season_episode(user_query)
     all_posts = await fetchall("SELECT * FROM posts WHERE published=1 AND deleted=0")
-    
     matched_posts = []
     
     for post in all_posts:
         title = post["title"].lower()
         title_clean, post_s, post_e = parse_season_episode(title)
-        
-        # নাম ম্যাচিং স্কোরিং
         is_title_match = False
         if clean_q and (clean_q in title or title_clean in clean_q):
             is_title_match = True
-        elif not clean_q: # শুধু পর্ব বা সিজন সার্চ করলে
+        elif not clean_q:
             is_title_match = True
             
         if is_title_match:
-            # যদি সিজন নির্দিষ্ট করা থাকে
             if req_s is not None and post_s is not None and req_s != post_s:
                 continue
-            # যদি পর্ব নির্দিষ্ট করা থাকে
             if req_e is not None and post_e is not None and req_e != post_e:
                 continue
-                
             matched_posts.append(post)
-            
     return matched_posts
 
 # =========================================================================
@@ -494,7 +483,7 @@ def main_menu_kb(is_admin: bool = False) -> InlineKeyboardMarkup:
 def admin_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📤 PUBLISH CONTENT", callback_data="admin_publish")],
-        [InlineKeyboardButton(text="📁 MANAGE FOLDERS & SEASONS", callback_data="admin_manage_folders")],
+        [InlineKeyboardButton(text="📁 MANAGE FOLDERS & EDIT", callback_data="admin_manage_folders")],
         [InlineKeyboardButton(text="👑 MANAGE ADMINS", callback_data="admin_manage_admins")],
         [InlineKeyboardButton(text="📥 RESTORE BACKUP", callback_data="admin_restore")],
         [InlineKeyboardButton(text="⚙️ SETTINGS", callback_data="admin_settings")],
@@ -765,7 +754,7 @@ async def cb_leaderboard(call: CallbackQuery):
     await safe_edit(call, text, reply_markup=back_kb("main"))
 
 # =========================================================================
-# BROWSE & PAGINATION
+# BROWSE & DYNAMIC SLIDING NUMBER PAGINATION
 # =========================================================================
 @router.callback_query(F.data == "browse")
 async def cb_browse(call: CallbackQuery):
@@ -861,14 +850,19 @@ async def show_category_posts(call: CallbackQuery, cat: str, lang: str, folder_i
     for p in page_posts:
         kb.append([InlineKeyboardButton(text=f"🎬 {truncate(p['title'], 25)} (👁 {p['views']})", callback_data=f"view:{p['code']}")])
 
+    # ডাইনামিক স্লাইডিং পেজিনেশন (সর্বোচ্চ ৫টি সংখ্যা দেখাবে, স্ক্রোলিং বা স্লাইডিং এর মতো কাজ করবে)
+    max_visible_pages = 5
+    start_page = max(1, page - max_visible_pages // 2)
+    end_page = min(total_pages, start_page + max_visible_pages - 1)
+    if end_page - start_page + 1 < max_visible_pages:
+        start_page = max(1, end_page - max_visible_pages + 1)
+
     num_row = []
-    for p_num in range(1, total_pages + 1):
+    for p_num in range(start_page, end_page + 1):
         if p_num == page:
             num_row.append(InlineKeyboardButton(text=f"[{p_num}]", callback_data="noop"))
         else:
             num_row.append(InlineKeyboardButton(text=str(p_num), callback_data=f"browsefolder:{cat}:{lang}:{folder_id}:{p_num}"))
-        if len(num_row) >= 5:
-            break
     if num_row:
         kb.append(num_row)
 
@@ -1193,7 +1187,7 @@ async def wd_address(message: Message, state: FSMContext):
     except: pass
 
 # =========================================================================
-# ADMIN PANEL, FOLDER/FILE MOVE & COPY, DB RESTORE
+# ADMIN PANEL: FOLDER EDIT, SUB-FOLDER ADD/REMOVE, MOVE/COPY, DB RESTORE
 # =========================================================================
 @router.message(Command("admin"))
 async def cmd_admin(message: Message):
@@ -1208,7 +1202,7 @@ async def cb_admin_panel(call: CallbackQuery):
     await safe_edit(call, "⚙️ <b>ADMIN PANEL</b>", reply_markup=admin_menu_kb())
 
 # -------------------------------------------------------------------------
-# FILE MOVE & COPY FEATURE (এক ফোল্ডার থেকে অন্য ফোল্ডারে মুভ বা কপি)
+# FILE MOVE & COPY FEATURE
 # -------------------------------------------------------------------------
 @router.callback_query(F.data == "admin_posts")
 async def cb_all_posts(call: CallbackQuery):
@@ -1247,7 +1241,6 @@ async def cb_adm_delpost(call: CallbackQuery):
     await call.answer("🗑 Post deleted.", show_alert=True)
     await cb_all_posts(call)
 
-# MOVE ACTION
 @router.callback_query(F.data.startswith("adm_move_start:"))
 async def cb_adm_move_start(call: CallbackQuery):
     code = call.data.split(":", 1)[1]
@@ -1271,7 +1264,6 @@ async def cb_adm_move_do(call: CallbackQuery):
     await call.answer("✅ সফলভাবে মুভ (Move) করা হয়েছে!", show_alert=True)
     await cb_all_posts(call)
 
-# COPY ACTION
 @router.callback_query(F.data.startswith("adm_copy_start:"))
 async def cb_adm_copy_start(call: CallbackQuery):
     code = call.data.split(":", 1)[1]
@@ -1305,7 +1297,7 @@ async def cb_adm_copy_do(call: CallbackQuery):
     await cb_all_posts(call)
 
 # -------------------------------------------------------------------------
-# FOLDER DELETE CONFIRMATION (YES / NO)
+# FOLDER MANAGEMENT: EDIT FOLDER, ADD SUB-FOLDER, REMOVE SUB-FOLDER, DELETE
 # -------------------------------------------------------------------------
 @router.callback_query(F.data == "admin_manage_folders")
 async def cb_manage_folders(call: CallbackQuery):
@@ -1315,7 +1307,7 @@ async def cb_manage_folders(call: CallbackQuery):
     for cat in ("movie", "viral", "anime"):
         kb.append([InlineKeyboardButton(text=f"📁 {CATEGORY_NAMES[cat]} Folders", callback_data=f"admfoldcat:{cat}")])
     kb.append([InlineKeyboardButton(text="🔙 BACK TO ADMIN", callback_data="admin_panel")])
-    await safe_edit(call, "📁 <b>MANAGE FOLDERS & SEASONS</b>\n\nSelect category:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    await safe_edit(call, "📁 <b>MANAGE FOLDERS & SUB-FOLDERS</b>\n\nSelect category:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
 @router.callback_query(F.data.startswith("admfoldcat:"))
 async def cb_admfoldcat(call: CallbackQuery):
@@ -1335,12 +1327,92 @@ async def cb_admfoldlang(call: CallbackQuery):
     kb = []
     if folders:
         for f in folders:
-            kb.append([InlineKeyboardButton(text=f"📁 Delete: {f['name']}", callback_data=f"admdelefold_confirm:{f['id']}")])
+            kb.append([InlineKeyboardButton(text=f"📁 {f['name']} (Manage/Edit)", callback_data=f"admfold_manage:{f['id']}")])
     else:
         kb.append([InlineKeyboardButton(text="⚠️ No folders found", callback_data="noop")])
     kb.append([InlineKeyboardButton(text="🔙 BACK", callback_data=f"admfoldcat:{cat}")])
-    await safe_edit(call, f"📁 <b>Delete Folders ({CATEGORY_NAMES[cat]} - {LANGUAGES[lang]}):</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    await safe_edit(call, f"📁 <b>Folders List ({CATEGORY_NAMES[cat]} - {LANGUAGES[lang]}):</b>\n\nফোল্ডার এডিট বা সাব-ফোল্ডার যুক্ত করতে ক্লিক করুন:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
+@router.callback_query(F.data.startswith("admfold_manage:"))
+async def cb_adm_folder_manage(call: CallbackQuery):
+    folder_id = int(call.data.split(":", 1)[1])
+    folder = await fetchone("SELECT * FROM admin_folders WHERE id=?", (folder_id,))
+    if not folder:
+        await call.answer("Folder not found.", show_alert=True)
+        return
+    
+    subfolders = await fetchall("SELECT * FROM admin_subfolders WHERE folder_id=?", (folder_id,))
+    
+    kb = [
+        [InlineKeyboardButton(text="✏️ ফোল্ডারের নাম পরিবর্তন করুন (Edit)", callback_data=f"adm_editfolder_start:{folder_id}")],
+        [InlineKeyboardButton(text="➕ সাব-ফোল্ডার যুক্ত করুন (Add Sub-folder)", callback_data=f"adm_addsub_start:{folder_id}")],
+        [InlineKeyboardButton(text="🗑 ফোল্ডার ডিলিট করুন (Delete Folder)", callback_data=f"admdelefold_confirm:{folder_id}")],
+    ]
+    
+    sub_txt = "\n📂 <b>সাব-ফোল্ডাসমূহ:</b>\n"
+    if subfolders:
+        for sf in subfolders:
+            sub_txt += f" - {sf['name']}\n"
+            kb.append([InlineKeyboardButton(text=f"❌ রিমুভ সাব-ফোল্ডার: {sf['name']}", callback_data=f"adm_removesub:{sf['id']}:{folder_id}")])
+    else:
+        sub_txt += "কোনো সাব-ফোল্ডার নেই।\n"
+        
+    kb.append([InlineKeyboardButton(text="🔙 ব্যাক", callback_data=f"admfoldlang:{folder['category']}:{folder['language']}")])
+    
+    await safe_edit(call, f"📁 <b>ফোল্ডার ম্যানেজমেন্ট:</b> <i>{esc(folder['name'])}</i>\n{sub_txt}", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+# ফোল্ডার এডিট (নাম পরিবর্তন)
+@router.callback_query(F.data.startswith("adm_editfolder_start:"))
+async def cb_edit_folder_start(call: CallbackQuery, state: FSMContext):
+    folder_id = int(call.data.split(":", 1)[1])
+    await state.update_data(edit_folder_id=folder_id)
+    await state.set_state(AdminStates.waiting_edit_folder)
+    await safe_edit(call, "✏️ ফোল্ডারের নতুন নামটি লিখে পাঠান:")
+
+@router.message(AdminStates.waiting_edit_folder)
+async def save_edited_folder_name(message: Message, state: FSMContext):
+    if not await is_admin_user(message.from_user.id):
+        return
+    new_name = (message.text or "").strip()
+    data = await state.get_data()
+    fid = data.get("edit_folder_id")
+    
+    await execute("UPDATE admin_folders SET name=? WHERE id=?", (new_name, fid))
+    await state.clear()
+    await message.answer(f"✅ ফোল্ডারের নাম পরিবর্তন করে <b>'{new_name}'</b> করা হয়েছে!", reply_markup=back_kb("admin_panel"))
+
+# সাব-ফোল্ডার অ্যাড করা
+@router.callback_query(F.data.startswith("adm_addsub_start:"))
+async def cb_addsub_start(call: CallbackQuery, state: FSMContext):
+    folder_id = int(call.data.split(":", 1)[1])
+    await state.update_data(parent_folder_id=folder_id)
+    await state.set_state(AdminStates.waiting_add_sub_dynamic)
+    await safe_edit(call, "✏️ নতুন সাব-ফোল্ডারের নাম (যেমন: Season Part 1) লিখে পাঠান:")
+
+@router.message(AdminStates.waiting_add_sub_dynamic)
+async def save_sub_dynamic(message: Message, state: FSMContext):
+    if not await is_admin_user(message.from_user.id):
+        return
+    sf_name = (message.text or "").strip()
+    data = await state.get_data()
+    fid = data.get("parent_folder_id")
+    
+    await execute("INSERT INTO admin_subfolders (folder_id, name) VALUES (?, ?)", (fid, sf_name))
+    await state.clear()
+    await message.answer(f"✅ সাব-ফোল্ডার <b>'{sf_name}'</b> সফলভাবে যুক্ত করা হয়েছে!", reply_markup=back_kb("admin_panel"))
+
+# সাব-ফোল্ডার রিমুভ করা
+@router.callback_query(F.data.startswith("adm_removesub:"))
+async def cb_remove_subfolder(call: CallbackQuery):
+    parts = call.data.split(":")
+    sf_id, folder_id = int(parts[1]), int(parts[2])
+    await execute("DELETE FROM admin_subfolders WHERE id=?", (sf_id,))
+    await call.answer("✅ সাব-ফোল্ডার রিমুভ করা হয়েছে!", show_alert=True)
+    # রিফ্রেশ ম্যানেজ মেনু
+    call.data = f"admfold_manage:{folder_id}"
+    await cb_adm_folder_manage(call)
+
+# ফোল্ডার ডিলিট কনফার্মেশন (Yes / No)
 @router.callback_query(F.data.startswith("admdelefold_confirm:"))
 async def cb_adm_delete_folder_confirm(call: CallbackQuery):
     folder_id = int(call.data.split(":", 1)[1])
@@ -1353,7 +1425,7 @@ async def cb_adm_delete_folder_confirm(call: CallbackQuery):
         [InlineKeyboardButton(text="✅ হ্যাঁ (Yes, Delete)", callback_data=f"admdelefold_yes:{folder_id}")],
         [InlineKeyboardButton(text="❌ না (No, Cancel)", callback_data="admin_manage_folders")]
     ])
-    await safe_edit(call, f"⚠️ আপনি কি ফোল্ডার <b>'{folder['name']}'</b> ডিলিট করতে চান?", reply_markup=kb)
+    await safe_edit(call, f"⚠️ আপনি কি ফোল্ডার <b>'{folder['name']}'</b> এবং এর ভেতরের সকল সাব-ফোল্ডার ডিলিট করতে চান?", reply_markup=kb)
 
 @router.callback_query(F.data.startswith("admdelefold_yes:"))
 async def cb_adm_delete_folder_yes(call: CallbackQuery):
@@ -1601,7 +1673,7 @@ async def save_admin_folder_name(message: Message, state: FSMContext):
     await state.update_data(folder_id=folder_id)
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ সাব-ফোল্ডার (Season Part/Episodes) তৈরি করুন", callback_data="admin_create_subfolder")],
+        [InlineKeyboardButton(text="➕ সাব-ফোল্ডার তৈরি করুন", callback_data="admin_create_subfolder")],
         [InlineKeyboardButton(text="✅ এই ফোল্ডারেই আপলোড সম্পন্ন করুন", callback_data="admin_proceed_preview")]
     ])
     await message.answer(f"✅ ফোল্ডার <b>'{folder_name}'</b> যুক্ত হয়েছে।", reply_markup=kb)
@@ -1809,7 +1881,7 @@ async def recv_setting(message: Message, state: FSMContext):
     await message.answer(f"✅ <b>{key}</b> = <b>{val}</b>", reply_markup=back_kb("admin_settings"))
 
 # =========================================================================
-# FIXED 60-SECOND AUTOMATIC BACKUP WORKER
+# 60-SECOND AUTOMATIC BACKUP WORKER
 # =========================================================================
 async def backup_worker():
     await asyncio.sleep(5)
@@ -1820,7 +1892,6 @@ async def backup_worker():
             if not os.path.exists(DB_PATH):
                 continue
             
-            # WAL Checkpoint
             try:
                 async with aiosqlite.connect(DB_PATH) as d:
                     await d.execute("PRAGMA wal_checkpoint(FULL)")
@@ -1828,7 +1899,6 @@ async def backup_worker():
             except Exception as e:
                 logger.error(f"checkpoint: {e}")
 
-            # Send Auto Backup to Admin
             last = backup_state.get("last_id")
             if last:
                 try: await bot.delete_message(ADMIN_CHAT_ID, last)
