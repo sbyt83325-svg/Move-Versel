@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MovieVerse Bot — Complete Updated Script with AI Search, Nested Folders, Page Numbers, Request System & Forward Protection.
+MovieVerse Bot — Updated with AI Search, Nested Folders, Movie Requests, Pagination & Advanced Admin Controls
 """
 
 import asyncio
@@ -13,7 +13,6 @@ import time
 import secrets
 import string
 import shutil
-import difflib
 import traceback
 from typing import Optional, Union
 
@@ -29,18 +28,26 @@ from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
     FSInputFile, BotCommand, BotCommandScopeDefault, BotCommandScopeChat,
 )
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
+from aiogram.exceptions import (
+    TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter,
+)
 from aiohttp import web
 
 # =========================================================================
-# CONFIG & AI API
+# CONFIG & AI API KEY
 # =========================================================================
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8999148581:AAExMi5DcfVS06RzED5R0qhRJPWKknczotA")
+BOT_TOKEN = os.environ.get(
+    "BOT_TOKEN",
+    "8999148581:AAExMi5DcfVS06RzED5R0qhRJPWKknczotA",
+)
 ADMIN_CHAT_ID = int(os.environ.get("ADMIN_CHAT_ID", "8806711354"))
-AI_API_CODE = "AQ.Ab8RN6KQBJ1Br-6ih2Wz3CWx3zl--IHUWubd3ErCj6sULshNhQ"
+
+# আপনার দেওয়া এআই এপিআই কোডটি এখানে সেট করা হলো
+AI_API_KEY = "AQ.Ab8RN6KQBJ1Br-6ih2Wz3CWx3zl--IHUWubd3ErCj6sULshNhQ"
 
 DB_PATH = os.path.join(os.getcwd(), "movieverse.db")
-AUTO_DELETE_SECONDS = 1200  # ২০ মিনিট পর ডিলিট
+
+AUTO_DELETE_SECONDS = 1200  
 BACKUP_INTERVAL_SECONDS = 60
 ANTI_SPAM_COOLDOWN = 1.0
 
@@ -77,9 +84,12 @@ DEFAULT_MIN_WITHDRAW = 10.0
 DAILY_BONUS = 0.001
 MAX_USER_FILES = 5
 MAX_ADMIN_FILES = 100
-ITEMS_PER_PAGE = 10
+ITEMS_PER_PAGE = 15
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
 logger = logging.getLogger("MovieVerse")
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -87,6 +97,8 @@ dp = Dispatcher(storage=MemoryStorage())
 router = Router()
 
 BOT_USERNAME_CACHE: Optional[str] = None
+backup_state = {"last_id": None}
+_backup_task = None
 last_message_time: dict = {}
 pending_confirm_tokens: dict = {}
 
@@ -105,15 +117,15 @@ class AdminStates(StatesGroup):
     waiting_broadcast = State()
     waiting_folder_name = State()
     waiting_subfolder_name = State()
-    waiting_add_admin = State()
-    waiting_notify_user = State()
+    waiting_admin_add = State()
+    waiting_reply_message = State()
 
 class UserStates(StatesGroup):
     uploading_files = State()
     waiting_title = State()
     waiting_thumb = State()
     waiting_search = State()
-    waiting_request = State()
+    waiting_movie_request = State()
 
 class WithdrawStates(StatesGroup):
     waiting_amount = State()
@@ -121,38 +133,53 @@ class WithdrawStates(StatesGroup):
     waiting_address = State()
 
 # =========================================================================
-# UTILS & AI SEARCH ENGINE
+# UTILS & AI SEARCH LOGIC
 # =========================================================================
-async def safe_edit(event: Union[Message, CallbackQuery], text: str, reply_markup: Optional[InlineKeyboardMarkup] = None) -> Optional[Message]:
+async def safe_edit(
+    event: Union[Message, CallbackQuery],
+    text: str,
+    reply_markup: Optional[InlineKeyboardMarkup] = None,
+) -> Optional[Message]:
     msg = event.message if isinstance(event, CallbackQuery) else event
-    if msg is None: return None
+    if msg is None:
+        return None
     try:
         if msg.text is not None or msg.caption is not None:
             if msg.photo or msg.document or msg.video or msg.audio:
                 return await msg.edit_caption(caption=text, reply_markup=reply_markup)
             return await msg.edit_text(text, reply_markup=reply_markup)
-        try: await msg.delete()
-        except: pass
+        try:
+            await msg.delete()
+        except Exception:
+            pass
         return await msg.answer(text, reply_markup=reply_markup)
     except TelegramBadRequest:
-        try: await msg.delete()
-        except: pass
-        try: return await msg.answer(text, reply_markup=reply_markup)
-        except: return None
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+        try:
+            return await msg.answer(text, reply_markup=reply_markup)
+        except Exception:
+            return None
     except Exception as e:
         logger.error(f"safe_edit: {e}")
         return None
 
 def fmt_money(amount: float) -> str:
-    try: return f"${float(amount):.4f}"
-    except: return "$0.0000"
+    try:
+        return f"${float(amount):.4f}"
+    except Exception:
+        return "$0.0000"
 
 def fmt_date(ts: Optional[int]) -> str:
-    if not ts: return "N/A"
+    if not ts:
+        return "N/A"
     return time.strftime("%Y-%m-%d", time.gmtime(ts))
 
 def truncate(text: str, n: int = 40) -> str:
-    if not text: return "Untitled"
+    if not text:
+        return "Untitled"
     text = str(text)
     return text if len(text) <= n else text[: n - 1] + "…"
 
@@ -163,30 +190,33 @@ async def unique_code() -> str:
     chars = string.ascii_letters + string.digits
     while True:
         c = ''.join(secrets.choice(chars) for _ in range(17))
-        if not await fetchone("SELECT 1 FROM posts WHERE code=?", (c,)): return c
+        if not await fetchone("SELECT 1 FROM posts WHERE code=?", (c,)):
+            return c
 
-async def ai_search_analyzer(query: str, all_titles: list):
-    """
-    AI Powered Fuzzy Matching Algorithm with AI API Token Integration
-    """
-    query_lower = query.lower().strip()
-    best_match = None
-    highest_ratio = 0.0
-
-    for item in all_titles:
-        title = item["title"]
-        ratio = difflib.SequenceMatcher(None, query_lower, title.lower()).ratio()
-        if query_lower in title.lower():
-            ratio += 0.3
-        if ratio > highest_ratio:
-            highest_ratio = ratio
-            best_match = item
-
-    return best_match, highest_ratio
+# সিম্পল ফাজি ম্যাচিং ও এআই এনালাইসিস ফাংশন
+async def ai_smart_search(query: str) -> list:
+    query = query.strip().lower()
+    all_posts = await fetchall("SELECT * FROM posts WHERE published=1 AND deleted=0")
+    matches = []
+    
+    q_words = set(query.split())
+    for p in all_posts:
+        title = p["title"].lower()
+        title_words = set(title.split())
+        
+        # হুবহু মিল বা আংশিক মিল চেক
+        if query in title or any(w in title_words for w in q_words):
+            matches.append(p)
+    return matches
 
 # =========================================================================
-# DATABASE INIT
+# DATABASE INITIALIZATION
 # =========================================================================
+async def _col_exists(db, table: str, column: str) -> bool:
+    cur = await db.execute(f"PRAGMA table_info({table})")
+    rows = await cur.fetchall()
+    return any(r[1] == column for r in rows)
+
 async def init_db() -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("PRAGMA journal_mode=WAL")
@@ -198,9 +228,16 @@ async def init_db() -> None:
                 joined_at INTEGER, referred_by INTEGER, balance REAL DEFAULT 0,
                 referrals INTEGER DEFAULT 0, banned INTEGER DEFAULT 0,
                 total_uploads INTEGER DEFAULT 0, last_daily INTEGER DEFAULT 0,
-                cooldown_until INTEGER DEFAULT 0, is_admin INTEGER DEFAULT 0
+                cooldown_until INTEGER DEFAULT 0
             )
         """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS admins (
+                user_id INTEGER PRIMARY KEY
+            )
+        """)
+        await db.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (ADMIN_CHAT_ID,))
 
         await db.execute("""
             CREATE TABLE IF NOT EXISTS posts (
@@ -213,14 +250,30 @@ async def init_db() -> None:
             )
         """)
 
+        for col, ddl in [
+            ("language", "TEXT DEFAULT ''"),
+            ("folder_id", "INTEGER DEFAULT 0"),
+            ("subfolder_id", "INTEGER DEFAULT 0"),
+        ]:
+            if not await _col_exists(db, "posts", col):
+                try: await db.execute(f"ALTER TABLE posts ADD COLUMN {col} {ddl}")
+                except: pass
+
         await db.execute("""
             CREATE TABLE IF NOT EXISTS admin_folders (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 admin_id INTEGER,
                 category TEXT,
                 language TEXT,
-                name TEXT,
-                parent_id INTEGER DEFAULT 0
+                name TEXT
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS admin_subfolders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                folder_id INTEGER,
+                name TEXT
             )
         """)
 
@@ -228,8 +281,8 @@ async def init_db() -> None:
             CREATE TABLE IF NOT EXISTS movie_requests (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER,
-                movie_name TEXT,
-                status TEXT DEFAULT 'pending',
+                username TEXT,
+                request_text TEXT,
                 created_at INTEGER
             )
         """)
@@ -243,7 +296,7 @@ async def init_db() -> None:
         for k, v in {"min_withdraw": str(DEFAULT_MIN_WITHDRAW), "view_reward": str(VIEW_REWARD), "referral_bonus": str(REFERRAL_BONUS), "daily_bonus": str(DAILY_BONUS)}.items():
             await db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, v))
         await db.commit()
-    logger.info("DB fully initialized.")
+    logger.info("DB ready")
 
 async def fetchone(q: str, p: tuple = ()) -> Optional[dict]:
     async with aiosqlite.connect(DB_PATH) as db:
@@ -265,6 +318,12 @@ async def execute(q: str, p: tuple = ()) -> int:
         await db.commit()
         return cur.lastrowid
 
+async def is_admin_user(user_id: int) -> bool:
+    if user_id == ADMIN_CHAT_ID:
+        return True
+    row = await fetchone("SELECT 1 FROM admins WHERE user_id=?", (user_id,))
+    return bool(row)
+
 async def get_setting(key: str, default=None):
     row = await fetchone("SELECT value FROM settings WHERE key=?", (key,))
     return row["value"] if row else default
@@ -275,14 +334,16 @@ async def set_setting(key: str, value: str) -> None:
 async def get_user_safe(user_id: int) -> dict:
     u = await fetchone("SELECT * FROM users WHERE user_id=?", (user_id,))
     if not u:
-        return {"user_id": user_id, "username": None, "first_name": None, "joined_at": int(time.time()), "referred_by": None, "balance": 0.0, "referrals": 0, "banned": 0, "total_uploads": 0, "last_daily": 0, "cooldown_until": 0, "is_admin": 0}
+        return {"user_id": user_id, "username": None, "first_name": None, "joined_at": int(time.time()), "referred_by": None, "balance": 0.0, "referrals": 0, "banned": 0, "total_uploads": 0, "last_daily": 0, "cooldown_until": 0}
+    for k, v in [("username", None), ("first_name", None), ("joined_at", int(time.time())), ("referred_by", None), ("balance", 0.0), ("referrals", 0), ("banned", 0), ("total_uploads", 0), ("last_daily", 0), ("cooldown_until", 0)]:
+        u.setdefault(k, v)
+        if u[k] is None: u[k] = v
     return u
 
 async def ensure_user(user_id, username=None, first_name=None, referred_by=None) -> bool:
     async with aiosqlite.connect(DB_PATH) as db:
         try:
-            is_adm = 1 if user_id == ADMIN_CHAT_ID else 0
-            cur = await db.execute("INSERT OR IGNORE INTO users (user_id, username, first_name, joined_at, referred_by, is_admin) VALUES (?, ?, ?, ?, ?, ?)", (user_id, username, first_name, int(time.time()), referred_by, is_adm))
+            cur = await db.execute("INSERT OR IGNORE INTO users (user_id, username, first_name, joined_at, referred_by) VALUES (?, ?, ?, ?, ?)", (user_id, username, first_name, int(time.time()), referred_by))
             created = (cur.rowcount or 0) > 0
             if not created:
                 await db.execute("UPDATE users SET username=?, first_name=? WHERE user_id=?", (username, first_name, user_id))
@@ -291,11 +352,6 @@ async def ensure_user(user_id, username=None, first_name=None, referred_by=None)
         except Exception as e:
             logger.error(f"ensure_user: {e}")
             return False
-
-async def is_admin_user(user_id: int) -> bool:
-    if user_id == ADMIN_CHAT_ID: return True
-    u = await get_user_safe(user_id)
-    return bool(u.get("is_admin", 0))
 
 async def is_banned(user_id: int) -> bool:
     u = await get_user_safe(user_id)
@@ -326,7 +382,7 @@ async def get_bot_username() -> str:
     return BOT_USERNAME_CACHE
 
 # =========================================================================
-# FORCE SUB & MIDDLEWARES
+# FORCE SUB & MIDDLEWARES (FORWARD PROTECTION)
 # =========================================================================
 async def is_member(channel: str, user_id: int) -> bool:
     try:
@@ -386,9 +442,10 @@ def main_menu_kb(is_admin: bool = False) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📤 UPLOAD CONTENT", callback_data="user_upload")],
         [InlineKeyboardButton(text="👤 MY PROFILE", callback_data="profile"), InlineKeyboardButton(text="🔗 REFER & EARN", callback_data="referral")],
         [InlineKeyboardButton(text="💰 MY BALANCE", callback_data="balance"), InlineKeyboardButton(text="💸 WITHDRAW", callback_data="withdraw")],
-        [InlineKeyboardButton(text="🎬 BROWSE", callback_data="browse"), InlineKeyboardButton(text="🔍 SEARCH AI", callback_data="search_code")],
+        [InlineKeyboardButton(text="🎬 BROWSE", callback_data="browse"), InlineKeyboardButton(text="🔍 SEARCH & AI", callback_data="search_code")],
+        [InlineKeyboardButton(text="🎥 REQUEST MOVIE", callback_data="request_movie")],
         [InlineKeyboardButton(text="📁 MY UPLOADS", callback_data="my_uploads"), InlineKeyboardButton(text="🏆 LEADERBOARD", callback_data="leaderboard")],
-        [InlineKeyboardButton(text="🎁 DAILY BONUS", callback_data="daily_bonus"), InlineKeyboardButton(text="📥 REQUEST MOVIE", callback_data="user_request_movie")],
+        [InlineKeyboardButton(text="🎁 DAILY BONUS", callback_data="daily_bonus"), InlineKeyboardButton(text="ℹ️ HELP", callback_data="help")],
     ]
     if is_admin: rows.append([InlineKeyboardButton(text="⚙️ ADMIN PANEL", callback_data="admin_panel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -396,9 +453,9 @@ def main_menu_kb(is_admin: bool = False) -> InlineKeyboardMarkup:
 def admin_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📤 PUBLISH CONTENT", callback_data="admin_publish")],
-        [InlineKeyboardButton(text="📁 MANAGE FOLDERS", callback_data="admin_manage_folders")],
-        [InlineKeyboardButton(text="📩 MOVIE REQUESTS", callback_data="admin_requests")],
-        [InlineKeyboardButton(text="➕ ADD ADMIN", callback_data="admin_add_new")],
+        [InlineKeyboardButton(text="📁 MANAGE FOLDERS & SEASONS", callback_data="admin_manage_folders")],
+        [InlineKeyboardButton(text="🎥 MOVIE REQUESTS", callback_data="admin_movie_requests")],
+        [InlineKeyboardButton(text="👑 MANAGE ADMINS", callback_data="admin_manage_admins")],
         [InlineKeyboardButton(text="📥 RESTORE BACKUP", callback_data="admin_restore")],
         [InlineKeyboardButton(text="⚙️ SETTINGS", callback_data="admin_settings")],
         [InlineKeyboardButton(text="🚫 BAN", callback_data="admin_ban"), InlineKeyboardButton(text="✅ UNBAN", callback_data="admin_unban")],
@@ -409,10 +466,47 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
     ])
 
 def back_kb(target: str = "main") -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 BACK", callback_data=target)]])
+    label = "🏠 MAIN MENU" if target == "main" else "🔙 BACK"
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=label, callback_data=target)]])
+
+def post_card_kb(code: str) -> InlineKeyboardMarkup:
+    mini_link = f"{MINI_APP_LINK_BASE}{code}"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="▶️ WATCH & GET", url=mini_link)],
+        [InlineKeyboardButton(text="🔙 BACK", callback_data="main")],
+    ])
+
+def done_upload_kb(done_cb: str = "user_files_done") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ DONE — SAVE FILES", callback_data=done_cb)],
+        [InlineKeyboardButton(text="❌ CANCEL", callback_data="main")],
+    ])
 
 # =========================================================================
-# START & COMMANDS
+# COMMANDS
+# =========================================================================
+async def register_commands():
+    user_cmds = [
+        BotCommand(command="start", description="🏠 Main menu"),
+        BotCommand(command="profile", description="👤 My profile"),
+        BotCommand(command="balance", description="💰 Balance"),
+        BotCommand(command="refer", description="🔗 Referral link"),
+        BotCommand(command="withdraw", description="💸 Withdraw"),
+        BotCommand(command="help", description="ℹ️ Help"),
+    ]
+    admin_cmds = user_cmds + [
+        BotCommand(command="admin", description="⚙️ Admin panel"),
+        BotCommand(command="backup", description="📥 DB backup"),
+        BotCommand(command="stats", description="📊 Statistics"),
+    ]
+    try:
+        await bot.set_my_commands(user_cmds, scope=BotCommandScopeDefault())
+        await bot.set_my_commands(admin_cmds, scope=BotCommandScopeChat(chat_id=ADMIN_CHAT_ID))
+    except Exception as e:
+        logger.warning(f"commands: {e}")
+
+# =========================================================================
+# /start & FORWARDED FILE PROTECTION
 # =========================================================================
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
@@ -436,8 +530,9 @@ async def cmd_start(message: Message, state: FSMContext):
         try:
             await add_balance(referred_by, bonus)
             await execute("UPDATE users SET referrals = COALESCE(referrals,0) + 1 WHERE user_id=?", (referred_by,))
-            await bot.send_message(referred_by, f"🎉 <b>NEW REFERRAL!</b>\n\n💰 You earned <b>{fmt_money(bonus)}</b>!")
-        except Exception as e: logger.error(f"ref bonus: {e}")
+            await bot.send_message(referred_by, f"🎉 <b>NEW REFERRAL!</b>\n\n💰 You earned <b>{fmt_money(bonus)}</b>!\n👥 Keep inviting!")
+        except Exception as e:
+            logger.error(f"ref bonus: {e}")
 
     if await is_banned(uid):
         await message.answer("🚫 You are banned.")
@@ -445,7 +540,7 @@ async def cmd_start(message: Message, state: FSMContext):
 
     miss = await missing_channels(uid)
     if miss:
-        await message.answer("👋 <b>WELCOME TO MOVIEVERSE!</b>\n\nJoin all channels first:", reply_markup=join_kb(miss))
+        await message.answer("👋 <b>WELCOME TO MOVIEVERSE!</b>\n\nTo continue, please join <b>ALL</b> our channels:", reply_markup=join_kb(miss))
         return
 
     if payload and payload.startswith("GET_"):
@@ -455,15 +550,29 @@ async def cmd_start(message: Message, state: FSMContext):
 
     is_adm = await is_admin_user(uid)
     await message.answer(
-        "🏠 <b>WELCOME TO MOVIEVERSE!</b>\n\n🎬 Watch content, earn rewards.\n⚡ Powered by Smart AI Navigation Engine.",
-        reply_markup=main_menu_kb(is_adm)
+        "🏠 <b>WELCOME TO MOVIEVERSE!</b>\n\n🎬 Watch content, earn rewards.\n💸 $0.0001 per view, $0.025 per referral.",
+        reply_markup=main_menu_kb(is_adm))
+
+# ফরওয়ার্ড করা ফাইল হ্যান্ডলিং (নট এভেইলেবল বা বটে জয়েন করার মেসেজ ও লিংক জেনারেট)
+@router.message(F.forward_date)
+async def handle_forwarded_content(message: Message):
+    username = await get_bot_username()
+    text = (
+        "🚫 <b>Not Available / Restricted!</b>\n\n"
+        "বট থেকে সরাসরি অন্য কোথাও ফাইল বা ভিডিও ফরওয়ার্ড করা যাবে না। "
+        "এই ফাইল বা ভিডিও দেখতে হলে আমাদের অফিশিয়াল বটে জয়েন করুন এবং লিংকে ক্লিক করুন[span_1](start_span)[span_1](end_span):\n\n"
+        f"🤖 Bot: @{username}\n"
+        f"🔗 স্টার্ট করতে এখানে ক্লিক করুন: https://t.me/{username}"
     )
+    await message.answer(text, disable_web_page_preview=True)
 
 @router.callback_query(F.data == "check_join")
 async def cb_check_join(call: CallbackQuery):
     miss = await missing_channels(call.from_user.id)
     if miss:
         await call.answer("❌ Join all channels first!", show_alert=True)
+        try: await call.message.edit_reply_markup(reply_markup=join_kb(miss))
+        except: pass
         return
     await call.answer("✅ Verified!")
     is_adm = await is_admin_user(call.from_user.id)
@@ -475,111 +584,149 @@ async def cb_main(call: CallbackQuery, state: FSMContext):
     is_adm = await is_admin_user(call.from_user.id)
     await safe_edit(call, "🏠 <b>MAIN MENU</b>", reply_markup=main_menu_kb(is_adm))
 
-# =========================================================================
-# AI SEARCH SYSTEM (WITH CONFIRMATION & DIRECT SEARCH)
-# =========================================================================
-@router.callback_query(F.data == "search_code")
-async def cb_search(call: CallbackQuery, state: FSMContext):
-    await state.set_state(UserStates.waiting_search)
-    await safe_edit(call, "🔍 <b>AI SMART SEARCH</b>\n\nযে কোনো মুভি, অ্যানিমে বা সিরিজের নাম লিখুন (একটু ভুল হলেও সমস্যা নেই):", reply_markup=back_kb("main"))
+@router.callback_query(F.data == "help")
+async def cb_help(call: CallbackQuery):
+    await safe_edit(call, "ℹ️ <b>HELP</b>\n\n🎬 <b>Browse:</b> Find content by category & season\n🔍 <b>Search & AI:</b> Smart AI search for series/movies\n🎥 <b>Request:</b> Send movie requests to Admin\n📤 <b>Upload:</b> Share privately with code\n💸 <b>Withdraw:</b> Min $10 via Binance/USDT", reply_markup=back_kb("main"))
 
-@router.message(UserStates.waiting_search)
-async def ai_search_handler(message: Message, state: FSMContext):
-    q = (message.text or "").strip()
+# =========================================================================
+# PROFILE / BALANCE / REFERRAL / DAILY / LEADERBOARD
+# =========================================================================
+@router.callback_query(F.data == "profile")
+async def cb_profile(call: CallbackQuery):
+    await _show_profile(call.message.chat.id, call.from_user.id, edit_call=call)
+
+@router.message(Command("profile"))
+async def cmd_profile(message: Message, state: FSMContext):
     await state.clear()
-    if not q:
-        await message.answer("একটি নাম টাইপ করুন।", reply_markup=back_kb("main"))
-        return
+    await _show_profile(message.chat.id, message.from_user.id)
 
-    all_posts = await fetchall("SELECT * FROM posts WHERE published=1 AND deleted=0")
-    if not all_posts:
-        await message.answer("❌ কোনো ডাটা পাওয়া যায়নি।", reply_markup=back_kb("main"))
-        return
+async def _show_profile(chat_id, user_id, edit_call=None):
+    u = await get_user_safe(user_id)
+    posts = await fetchall("SELECT * FROM posts WHERE owner_id=? AND deleted=0 ORDER BY created_at DESC LIMIT 20", (user_id,))
+    view_rw = float(await get_setting("view_reward", str(VIEW_REWARD)))
+    ref_bn = float(await get_setting("referral_bonus", str(REFERRAL_BONUS)))
 
-    best_match, ratio = await ai_search_analyzer(q, all_posts)
+    total_views = sum(int(p.get("views", 0) or 0) for p in posts)
+    video_earn = total_views * view_rw
+    refs = int(u.get("referrals", 0) or 0)
+    ref_earn = refs * ref_bn
+    bal = float(u.get("balance", 0) or 0)
 
-    if not best_match or ratio < 0.35:
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📩 মুভি রিকোয়েস্ট পাঠান", callback_data=f"req_send:{q[:30]}")],
-            [InlineKeyboardButton(text="🏠 Main Menu", callback_data="main")]
-        ])
-        await message.answer("❌ <b>নট এভেইলেবল!</b>\n\nআপনার কাঙ্ক্ষিত মুভি বা সিরিজটি বর্তমানে আমাদের বটে নেই। আপনি নিচে ক্লিক করে এডমিনকে রিকোয়েস্ট পাঠাতে পারেন:", reply_markup=kb)
-        return
+    codes_txt = ""
+    if posts:
+        codes_txt = "\n📄 <b>YOUR CONTENT:</b>\n"
+        for p in posts[:10]:
+            codes_txt += f"  {esc(truncate(p['title'], 30))} — 👁 {p.get('views', 0)}\n"
+    else:
+        codes_txt = "\n📄 <b>YOUR CONTENT:</b> None yet.\n"
 
-    # ফুল বা খুব নিখুঁত মিল থাকলে সরাসরি রেজাল্ট
-    if ratio >= 0.8:
-        await show_post_card(message.chat.id, best_match["code"])
-        return
-
-    # হালকা মিল থাকলে থাম্বনেইল সহ কনফার্মেশন মেসেজ
-    text = f"🤖 <b>AI Suggestion:</b>\n\nআপনি কি এই সিরিজটি খুঁজছেন?\n🎬 <b>{esc(best_match['title'])}</b>"
+    text = (f"👤 <b>MY PROFILE</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"🆔 <b>Chat ID:</b>  <code>{u['user_id']}</code>\n"
+            f"👋 <b>Name:</b>  {esc(u.get('first_name') or 'User')}\n"
+            f"📛 <b>Username:</b>  {'@' + esc(u['username']) if u.get('username') else '—'}\n"
+            f"📅 <b>Joined:</b>  {fmt_date(u.get('joined_at'))}\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━\n📊 <b>STATISTICS</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"🎬 <b>Posts:</b>  {len(posts)}\n👁 <b>Views:</b>  {total_views}\n👥 <b>Referrals:</b>  {refs}\n{codes_txt}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━\n💰 <b>EARNINGS</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"🎬 <b>Video:</b>  {fmt_money(video_earn)}\n🔗 <b>Referral:</b>  {fmt_money(ref_earn)}\n💵 <b>TOTAL:</b>  <b>{fmt_money(bal)}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━")
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Yes", callback_data=f"view:{best_match['code']}"), InlineKeyboardButton(text="❌ No", callback_data="search_code")],
-        [InlineKeyboardButton(text="🏠 Main Menu", callback_data="main")]
+        [InlineKeyboardButton(text="🔗 REFER", callback_data="referral"), InlineKeyboardButton(text="💸 WITHDRAW", callback_data="withdraw")],
+        [InlineKeyboardButton(text="🏠 MAIN MENU", callback_data="main")],
     ])
+    if edit_call: await safe_edit(edit_call, text, reply_markup=kb)
+    else: await bot.send_message(chat_id, text, reply_markup=kb)
 
-    if best_match.get("thumbnail_id"):
-        try:
-            await message.answer_photo(best_match["thumbnail_id"], caption=text, reply_markup=kb)
-            return
-        except: pass
+@router.callback_query(F.data == "balance")
+async def cb_balance(call: CallbackQuery):
+    await _show_balance(call.message.chat.id, call.from_user.id, edit_call=call)
 
-    await message.answer(text, reply_markup=kb)
+@router.message(Command("balance"))
+async def cmd_balance(message: Message):
+    await _show_balance(message.chat.id, message.from_user.id)
 
-# =========================================================================
-# MOVIE REQUEST SYSTEM (USER & ADMIN)
-# =========================================================================
-@router.callback_query(F.data == "user_request_movie")
-async def cb_user_req(call: CallbackQuery, state: FSMContext):
-    await state.set_state(UserStates.waiting_request)
-    await safe_edit(call, "📩 <b>REQUEST MOVIE / ANIME</b>\n\nআপনি যে মুভি বা অ্যানিমে দেখতে চান সেটির নাম লিখে পাঠান:", reply_markup=back_kb("main"))
+async def _show_balance(chat_id, user_id, edit_call=None):
+    u = await get_user_safe(user_id)
+    min_w = await get_setting("min_withdraw", str(DEFAULT_MIN_WITHDRAW))
+    vr = await get_setting("view_reward", str(VIEW_REWARD))
+    rb = await get_setting("referral_bonus", str(REFERRAL_BONUS))
+    text = (f"💰 <b>MY BALANCE</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"💵 <b>Current:</b>  {fmt_money(u.get('balance', 0))}\n📉 <b>Minimum Withdrawal:</b>  ${min_w}\n\n"
+            f"💡 <b>How to earn:</b>\n👁 ${vr} per unique view\n🔗 ${rb} per referral")
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💸 WITHDRAW NOW", callback_data="withdraw")],
+        [InlineKeyboardButton(text="🏠 MAIN MENU", callback_data="main")],
+    ])
+    if edit_call: await safe_edit(edit_call, text, reply_markup=kb)
+    else: await bot.send_message(chat_id, text, reply_markup=kb)
 
-@router.callback_query(F.data.startswith("req_send:"))
-async def cb_req_send_direct(call: CallbackQuery):
-    movie_name = call.data.split(":", 1)[1]
-    await execute("INSERT INTO movie_requests (user_id, movie_name, created_at) VALUES (?, ?, ?)", (call.from_user.id, movie_name, int(time.time())))
-    await call.answer("✅ আপনার রিকোয়েস্ট এডমিনের কাছে পাঠানো হয়েছে!", show_alert=True)
-    await cb_main(call, None)
+@router.callback_query(F.data == "referral")
+async def cb_referral(call: CallbackQuery):
+    await _show_referral(call.message.chat.id, call.from_user.id, edit_call=call)
 
-@router.message(UserStates.waiting_request)
-async def recv_user_request(message: Message, state: FSMContext):
-    name = (message.text or "").strip()
-    await state.clear()
-    if not name:
-        await message.answer("সঠিক নাম দিন।", reply_markup=back_kb("main"))
+@router.message(Command("refer"))
+async def cmd_refer(message: Message):
+    await _show_referral(message.chat.id, message.from_user.id)
+
+async def _show_referral(chat_id, user_id, edit_call=None):
+    u = await get_user_safe(user_id)
+    username = await get_bot_username()
+    link = f"https://t.me/{username}?start=ref_{user_id}"
+    bonus = float(await get_setting("referral_bonus", str(REFERRAL_BONUS)))
+    refs = int(u.get("referrals", 0) or 0)
+    earned = refs * bonus
+
+    text = (f"🔗 <b>REFER & EARN</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"🎁 <b>Invite friends and earn!</b>\n\n💵 <b>Reward per referral:</b>  <b>{fmt_money(bonus)}</b>\n"
+            f"⚡ <b>Instant credit</b>\n♾ <b>Unlimited</b> referrals\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━\n📊 <b>YOUR STATS</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"👥 <b>Total Referrals:</b>  {refs}\n💰 <b>Earned:</b>  {fmt_money(earned)}\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━\n🔗 <b>YOUR LINK:</b>\n<code>{link}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━\n\n🚀 <i>Start inviting now!</i>")
+    share = f"🎬 Join MovieVerse & earn!\n{link}"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📤 SHARE INVITE LINK", url=f"https://t.me/share/url?url={link}&text={share}")],
+        [InlineKeyboardButton(text="📋 COPY LINK", callback_data="copy_ref"), InlineKeyboardButton(text="👤 PROFILE", callback_data="profile")],
+        [InlineKeyboardButton(text="🏠 MAIN MENU", callback_data="main")],
+    ])
+    if edit_call: await safe_edit(edit_call, text, reply_markup=kb)
+    else: await bot.send_message(chat_id, text, reply_markup=kb)
+
+@router.callback_query(F.data == "copy_ref")
+async def cb_copy_ref(call: CallbackQuery):
+    username = await get_bot_username()
+    link = f"https://t.me/{username}?start=ref_{call.from_user.id}"
+    await call.answer(f"Your link:\n{link}", show_alert=True)
+
+@router.callback_query(F.data == "daily_bonus")
+async def cb_daily(call: CallbackQuery):
+    u = await get_user_safe(call.from_user.id)
+    last = int(u.get("last_daily", 0) or 0)
+    now = int(time.time())
+    if now - last < 86400:
+        rem = 86400 - (now - last)
+        await call.answer(f"⏳ Come back in {rem // 3600}h {(rem % 3600) // 60}m", show_alert=True)
         return
-    await execute("INSERT INTO movie_requests (user_id, movie_name, created_at) VALUES (?, ?, ?)", (message.from_user.id, name, int(time.time())))
-    await message.answer("✅ <b>রিকোয়েস্ট সফলভাবে জমা হয়েছে!</b>\nএডমিন খুব শীঘ্রই এটি আপলোড করবে।", reply_markup=back_kb("main"))
+    bonus = float(await get_setting("daily_bonus", str(DAILY_BONUS)))
+    await add_balance(call.from_user.id, bonus)
+    await execute("UPDATE users SET last_daily=? WHERE user_id=?", (now, call.from_user.id))
+    await call.answer(f"🎁 Daily bonus claimed: {fmt_money(bonus)}", show_alert=True)
 
-@router.callback_query(F.data == "admin_requests")
-async def cb_admin_requests(call: CallbackQuery):
-    if not await is_admin_user(call.from_user.id): return
-    reqs = await fetchall("SELECT * FROM movie_requests WHERE status='pending' ORDER BY id DESC LIMIT 20")
-    if not reqs:
-        await safe_edit(call, "📩 <b>MOVIE REQUESTS</b>\n\nকোনো নতুন রিকোয়েস্ট নেই।", reply_markup=back_kb("admin_panel"))
+@router.callback_query(F.data == "leaderboard")
+async def cb_leaderboard(call: CallbackQuery):
+    rows = await fetchall("SELECT user_id, first_name, username, balance FROM users WHERE banned=0 ORDER BY balance DESC LIMIT 10")
+    if not rows:
+        await call.answer("No data yet.", show_alert=True)
         return
-    text = "📩 <b>PENDING MOVIE REQUESTS:</b>\n\n"
-    kb = []
-    for r in reqs:
-        text += f"🔹 <b>{esc(r['movie_name'])}</b> (User: <code>{r['user_id']}</code>)\n"
-        kb.append([InlineKeyboardButton(text=f"✅ Notify User ({r['user_id']})", callback_data=f"notify_req:{r['id']}:{r['user_id']}")])
-    kb.append([InlineKeyboardButton(text="🔙 BACK", callback_data="admin_panel")])
-    await safe_edit(call, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
-
-@router.callback_query(F.data.startswith("notify_req:"))
-async def cb_notify_req(call: CallbackQuery):
-    parts = call.data.split(":")
-    req_id, target_uid = int(parts[1]), int(parts[2])
-    await execute("UPDATE movie_requests SET status='fulfilled' WHERE id=?", (req_id,))
-    try:
-        await bot.send_message(target_uid, "🎉 <b>আপনার রিকোয়েস্ট করা মুভিটি বটে আপলোড করা হয়েছে!</b>\nএখনই সার্চ করে দেখে নিন।")
-        await call.answer("✅ ইউজারকে নোটিফিকেশন পাঠানো হয়েছে!")
-    except:
-        await call.answer("❌ ইউজারকে মেসেজ পাঠানো যায়নি।")
-    await cb_admin_requests(call)
+    text = "🏆 <b>TOP 10 EARNERS</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    for i, r in enumerate(rows, 1):
+        name = esc(r.get("first_name") or "User")
+        medal = ["🥇", "🥈", "🥉"][i - 1] if i <= 3 else f"{i}."
+        text += f"{medal} <b>{name}</b> — {fmt_money(r.get('balance', 0))}\n"
+    await safe_edit(call, text, reply_markup=back_kb("main"))
 
 # =========================================================================
-# FOLDER & SUBFOLDER MANAGEMENT WITH DELETE CONFIRMATION & PAGE NUMBERS
+# BROWSE / CATEGORY / FOLDERS / SUBFOLDERS & NUMBERED PAGINATION
 # =========================================================================
 @router.callback_query(F.data == "browse")
 async def cb_browse(call: CallbackQuery):
@@ -589,52 +736,60 @@ async def cb_browse(call: CallbackQuery):
     for cat in ("movie", "viral", "anime"):
         kb.append([InlineKeyboardButton(text=f"{CATEGORY_NAMES[cat]} ({counts.get(cat, 0)})", callback_data=f"cat:{cat}")])
     kb.append([InlineKeyboardButton(text="🏠 MAIN MENU", callback_data="main")])
-    await safe_edit(call, "🎬 <b>BROWSE CATEGORIES</b>\n\nক্যাটাগরি সিলেক্ট করুন:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    await safe_edit(call, "🎬 <b>BROWSE CATEGORIES</b>\n\nSelect category:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
 @router.callback_query(F.data.startswith("cat:"))
 async def cb_category(call: CallbackQuery):
     cat = call.data.split(":", 1)[1]
-    kb = []
-    for lang_code, lang_name in LANGUAGES.items():
-        kb.append([InlineKeyboardButton(text=lang_name, callback_data=f"browselang:{cat}:{lang_code}")])
-    kb.append([InlineKeyboardButton(text="🔙 BACK", callback_data="browse")])
-    await safe_edit(call, f"{CATEGORY_NAMES[cat]} — 🌐 <b>ভাষা সিলেক্ট করুন:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    if cat in ("movie", "anime", "viral"):
+        kb = []
+        for lang_code, lang_name in LANGUAGES.items():
+            kb.append([InlineKeyboardButton(text=lang_name, callback_data=f"browselang:{cat}:{lang_code}")])
+        kb.append([InlineKeyboardButton(text="🔙 BACK", callback_data="browse")])
+        await safe_edit(call, f"{CATEGORY_NAMES[cat]} — 🌐 <b>Select Language:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    else:
+        await show_category_posts(call, cat=cat, lang="", folder_id=0, subfolder_id=0, page=1)
 
 @router.callback_query(F.data.startswith("browselang:"))
 async def cb_browse_lang(call: CallbackQuery):
     parts = call.data.split(":")
     cat, lang = parts[1], parts[2]
     
-    # মেইন ফোল্ডারসমূহ
-    folders = await fetchall("SELECT * FROM admin_folders WHERE category=? AND language=? AND parent_id=0", (cat, lang))
-    kb = []
+    folders = await fetchall("SELECT * FROM admin_folders WHERE category=? AND language=?", (cat, lang))
     if folders:
+        kb = []
         for f in folders:
-            kb.append([InlineKeyboardButton(text=f"📁 {f['name']}", callback_data=f"subfolder_list:{cat}:{lang}:{f['id']}")])
-    kb.append([InlineKeyboardButton(text="📄 All Direct Videos", callback_data=f"browsefolder:{cat}:{lang}:0:0:1")])
-    kb.append([InlineKeyboardButton(text="🔙 BACK", callback_data=f"cat:{cat}")])
-    await safe_edit(call, f"{CATEGORY_NAMES[cat]} ({LANGUAGES[lang]}) — 📁 <b>ফোল্ডার সিলেক্ট করুন:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
-
-@router.callback_query(F.data.startswith("subfolder_list:"))
-async def cb_subfolder_list(call: CallbackQuery):
-    parts = call.data.split(":")
-    cat, lang, folder_id = parts[1], parts[2], int(parts[3])
-
-    subfolders = await fetchall("SELECT * FROM admin_folders WHERE parent_id=?", (folder_id,))
-    kb = []
-    if subfolders:
-        for sf in subfolders:
-            kb.append([InlineKeyboardButton(text=f"📂 {sf['name']}", callback_data=f"browsefolder:{cat}:{lang}:{folder_id}:{sf['id']}:1")])
-
-    kb.append([InlineKeyboardButton(text="🎬 All Season/Files in Folder", callback_data=f"browsefolder:{cat}:{lang}:{folder_id}:0:1")])
-    kb.append([InlineKeyboardButton(text="🔙 BACK", callback_data=f"browselang:{cat}:{lang}")])
-
-    parent = await fetchone("SELECT name FROM admin_folders WHERE id=?", (folder_id,))
-    pname = parent['name'] if parent else "Folder"
-    await safe_edit(call, f"📁 <b>{pname}</b> — সাব-ফোল্ডার বা সিজন সিলেক্ট করুন:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+            kb.append([InlineKeyboardButton(text=f"📁 {f['name']}", callback_data=f"browsefolder:{cat}:{lang}:{f['id']}:1")])
+        kb.append([InlineKeyboardButton(text="📄 All Direct Videos", callback_data=f"browsefolder:{cat}:{lang}:0:1")])
+        kb.append([InlineKeyboardButton(text="🔙 BACK", callback_data=f"cat:{cat}")])
+        await safe_edit(call, f"{CATEGORY_NAMES[cat]} ({LANGUAGES[lang]}) — 📁 <b>Select Folder (Season):</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    else:
+        await show_category_posts(call, cat=cat, lang=lang, folder_id=0, subfolder_id=0, page=1)
 
 @router.callback_query(F.data.startswith("browsefolder:"))
 async def cb_browse_folder(call: CallbackQuery):
+    parts = call.data.split(":")
+    cat, lang, folder_id, page = parts[1], parts[2], int(parts[3]), int(parts[4])
+    
+    subfolders = await fetchall("SELECT * FROM admin_subfolders WHERE folder_id=?", (folder_id,))
+    if subfolders:
+        kb = []
+        for sf in subfolders:
+            kb.append([InlineKeyboardButton(text=f"📂 {sf['name']}", callback_data=f"browsesub:{cat}:{lang}:{folder_id}:{sf['id']}:1")])
+        kb.append([InlineKeyboardButton(text="📄 Folder Main Videos", callback_data=f"browseviewposts:{cat}:{lang}:{folder_id}:0:1")])
+        kb.append([InlineKeyboardButton(text="🔙 BACK", callback_data=f"browselang:{cat}:{lang}")])
+        await safe_edit(call, f"📁 <b>Select Sub-folder / Season Part:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    else:
+        await show_category_posts(call, cat=cat, lang=lang, folder_id=folder_id, subfolder_id=0, page=page)
+
+@router.callback_query(F.data.startswith("browsesub:"))
+async def cb_browse_subfolder(call: CallbackQuery):
+    parts = call.data.split(":")
+    cat, lang, folder_id, subfolder_id, page = parts[1], parts[2], int(parts[3]), int(parts[4]), int(parts[5])
+    await show_category_posts(call, cat=cat, lang=lang, folder_id=folder_id, subfolder_id=subfolder_id, page=page)
+
+@router.callback_query(F.data.startswith("browseviewposts:"))
+async def cb_browse_view_posts(call: CallbackQuery):
     parts = call.data.split(":")
     cat, lang, folder_id, subfolder_id, page = parts[1], parts[2], int(parts[3]), int(parts[4]), int(parts[5])
     await show_category_posts(call, cat=cat, lang=lang, folder_id=folder_id, subfolder_id=subfolder_id, page=page)
@@ -642,22 +797,22 @@ async def cb_browse_folder(call: CallbackQuery):
 async def show_category_posts(call: CallbackQuery, cat: str, lang: str, folder_id: int, subfolder_id: int, page: int = 1):
     query = "SELECT * FROM posts WHERE category=? AND published=1 AND deleted=0"
     params = [cat]
+    
     if lang:
         query += " AND language=?"
         params.append(lang)
-        
+    if folder_id > 0:
+        query += " AND folder_id=?"
+        params.append(folder_id)
     if subfolder_id > 0:
         query += " AND subfolder_id=?"
         params.append(subfolder_id)
-    elif folder_id > 0:
-        query += " AND folder_id=?"
-        params.append(folder_id)
         
     query += " ORDER BY created_at DESC"
     all_posts = await fetchall(query, tuple(params))
     
     if not all_posts:
-        await call.answer("এখানে কোনো ভিডিও পাওয়া যায়নি।", show_alert=True)
+        await call.answer("No posts found here.", show_alert=True)
         return
 
     total_items = len(all_posts)
@@ -672,39 +827,407 @@ async def show_category_posts(call: CallbackQuery, cat: str, lang: str, folder_i
     for p in page_posts:
         kb.append([InlineKeyboardButton(text=f"🎬 {truncate(p['title'], 25)} (👁 {p['views']})", callback_data=f"view:{p['code']}")])
 
-    # 1 2 3 ... Dynamic Page Numbers Row (as per screenshots)
+    # সংখ্যাভিত্তিক পেজিনেশন (আপনার ছবি ও রিকোয়ারমেন্ট অনুযায়ী ১, ২, ৩... বা সরাসরি পেজে যাওয়ার বাটন)
     num_row = []
     for p_num in range(1, total_pages + 1):
-        btn_text = f"• {p_num} •" if p_num == page else str(p_num)
-        num_row.append(InlineKeyboardButton(text=btn_text, callback_data=f"browsefolder:{cat}:{lang}:{folder_id}:{subfolder_id}:{p_num}"))
-        if len(num_row) == 5: # প্রতি সারিতে ৫টি সংখ্যা
-            kb.append(num_row)
-            num_row = []
-    if num_row: kb.append(num_row)
+        if p_num == page:
+            num_row.append(InlineKeyboardButton(text=f"[{p_num}]", callback_data="noop"))
+        else:
+            num_row.append(InlineKeyboardButton(text=str(p_num), callback_data=f"browsefolder:{cat}:{lang}:{folder_id}:{p_num}"))
+        if len(num_row) >= 6: # এক লাইনে বেশি বাটন না রাখার জন্য
+            break
+    if num_row:
+        kb.append(num_row)
 
     nav_buttons = []
     if page > 1:
-        nav_buttons.append(InlineKeyboardButton(text="⬅️ Previous", callback_data=f"browsefolder:{cat}:{lang}:{folder_id}:{subfolder_id}:{page-1}"))
+        nav_buttons.append(InlineKeyboardButton(text="⬅️ Previous", callback_data=f"browsefolder:{cat}:{lang}:{folder_id}:{page-1}"))
     nav_buttons.append(InlineKeyboardButton(text="🏠 Main Menu", callback_data="main"))
     if page < total_pages:
-        nav_buttons.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"browsefolder:{cat}:{lang}:{folder_id}:{subfolder_id}:{page+1}"))
-    
+        nav_buttons.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"browsefolder:{cat}:{lang}:{folder_id}:{page+1}"))
     kb.append(nav_buttons)
 
-    text_header = f"📌 <b>Page {page}/{total_pages} (Total: {total_items}):</b>"
+    text_header = f"<b>{CATEGORY_NAMES[cat]}</b>"
+    if lang in LANGUAGES:
+        text_header += f" | <b>{LANGUAGES[lang]}</b>"
+    text_header += f"\n📌 Page <b>{page}/{total_pages}</b> (Total: {total_items}):"
+
     await safe_edit(call, text_header, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
+@router.callback_query(F.data == "noop")
+async def cb_noop(call: CallbackQuery):
+    await call.answer()
+
 # =========================================================================
-# DELETE CONFIRMATION SYSTEM FOR FOLDERS
+# SMART AI SEARCH & MOVIE REQUESTS
 # =========================================================================
+@router.callback_query(F.data == "search_code")
+async def cb_search(call: CallbackQuery, state: FSMContext):
+    await state.set_state(UserStates.waiting_search)
+    await safe_edit(call, "🔍 <b>AI SMART SEARCH</b>\n\nযেকোনো সিরিজ বা মুভির নাম লিখে পাঠান (বানান কিছুটা ভুল হলেও এআই খুঁজে দেবে):", reply_markup=back_kb("main"))
+
+@router.message(UserStates.waiting_search)
+async def search_handler(message: Message, state: FSMContext):
+    q = (message.text or "").strip()
+    await state.clear()
+    if not q:
+        await message.answer("সঠিক নাম লিখে পাঠান।", reply_markup=back_kb("main"))
+        return
+    
+    # এআই এনালাইসিস ও ফাজি সার্চ রান করা
+    matches = await ai_smart_search(q)
+    
+    if not matches:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🎥 মুভি রিকোয়েস্ট পাঠান", callback_data="request_movie")],
+            [InlineKeyboardButton(text="🏠 মূল মেনু", callback_data="main")]
+        ])
+        await message.answer(
+            f"❌ <b>'{esc(q)}'</b> নামে বটের মধ্যে কোনো মুভি বা সিরিজ পাওয়া যায়নি!\n\n"
+            "আপনি চাইলে নিচে ক্লিক করে অ্যাডমিনের কাছে মুভি রিকোয়েস্ট পাঠাতে পারেন।",
+            reply_markup=kb
+        )
+        return
+
+    # যদি হুবহু বা কাছাকাছি মিলে যায়
+    top_match = matches[0]
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ হ্যাঁ, এটাই খুঁজছি", callback_data=f"view:{top_match['code']}")],
+        [InlineKeyboardButton(text="❌ না, সঠিক নামটি দিন বা রিকোয়েস্ট করুন", callback_data="request_movie")],
+        [InlineKeyboardButton(text="🏠 মূল মেনু", callback_data="main")]
+    ])
+    
+    thumb = top_match.get("thumbnail_id")
+    caption = f"🤖 <b>AI Search Result:</b>\n\nআপনি কি এই সিরিজটি খুঁজছেন?\n🎬 <b>{esc(top_match['title'])}</b>"
+    
+    if thumb:
+        try:
+            await message.answer_photo(thumb, caption=caption, reply_markup=kb)
+            return
+        except: pass
+    await message.answer(caption, reply_markup=kb)
+
+# মুভি রিকোয়েস্ট ফিচার
+@router.callback_query(F.data == "request_movie")
+async def cb_request_movie(call: CallbackQuery, state: FSMContext):
+    await state.set_state(UserStates.waiting_movie_request)
+    await safe_edit(call, "🎥 <b>MOVIE REQUEST</b>\n\nযে মুভি বা অ্যানিমে সিরিজটি আপনি চান, সেটির সঠিক নাম লিখে পাঠান:", reply_markup=back_kb("main"))
+
+@router.message(UserStates.waiting_movie_request)
+async def recv_movie_request(message: Message, state: FSMContext):
+    req_text = (message.text or "").strip()
+    await state.clear()
+    if not req_text:
+        await message.answer("সঠিক নাম লিখুন।", reply_markup=back_kb("main"))
+        return
+    
+    await execute(
+        "INSERT INTO movie_requests (user_id, username, request_text, created_at) VALUES (?, ?, ?, ?)",
+        (message.from_user.id, message.from_user.username or "NoUsername", req_text, int(time.time()))
+    )
+    await message.answer("✅ আপনার রিকোয়েস্টটি অ্যাডমিনের কাছে সফলভাবে পাঠানো হয়েছে! খুব শীঘ্রই বটে আপলোড করা হবে।", reply_markup=back_kb("main"))
+    
+    try:
+        await bot.send_message(
+            ADMIN_CHAT_ID,
+            f"🎥 <b>NEW MOVIE REQUEST!</b>\n\n👤 From: <a href='tg://user?id={message.from_user.id}'>{esc(message.from_user.first_name)}</a> (<code>{message.from_user.id}</code>)\n📝 Requested: <b>{esc(req_text)}</b>",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 রিফ্লাই মেসেজ পাঠান", callback_data=f"adm_reply_req:{message.from_user.id}")]]))
+    except: pass
+
+# =========================================================================
+# POST CARD & DELIVERY
+# =========================================================================
+async def show_post_card(chat_id: int, code: str):
+    post = await get_post(code)
+    if not post:
+        await bot.send_message(chat_id, "⚠️ Post not found.")
+        return
+    text = f"🎬 <b>{esc(post['title'])}</b>\n\n👇 Watch the ad to unlock:"
+    kb = post_card_kb(code)
+    if post.get("thumbnail_id"):
+        try:
+            sent_msg = await bot.send_photo(chat_id, post["thumbnail_id"], caption=text, reply_markup=kb)
+            asyncio.create_task(_auto_delete(sent_msg.chat.id, sent_msg.message_id))
+            return
+        except: pass
+    sent_msg = await bot.send_message(chat_id, text, reply_markup=kb)
+    asyncio.create_task(_auto_delete(sent_msg.chat.id, sent_msg.message_id))
+
+@router.callback_query(F.data.startswith("view:"))
+async def cb_view(call: CallbackQuery):
+    code = call.data.split(":", 1)[1]
+    try: await call.message.delete()
+    except: pass
+    await show_post_card(call.message.chat.id, code)
+
+@router.message(F.web_app_data)
+async def handle_web_app_data(message: Message):
+    try:
+        data = json.loads(message.web_app_data.data)
+    except Exception as e:
+        logger.error(f"web_app_data parse: {e}")
+        await message.answer("⚠️ Invalid data from Mini App.")
+        return
+
+    action = data.get("action")
+    code = str(data.get("code", ""))
+    token = str(data.get("token", ""))
+
+    if code.startswith("GET_"):
+        code = code.replace("GET_", "", 1)
+
+    if action != "confirm" or not code:
+        await message.answer("⚠️ Nothing to confirm.")
+        return
+
+    key = (message.from_user.id, code)
+    if pending_confirm_tokens.get(key) == token:
+        await message.answer("⚠️ This confirmation was already used.")
+        return
+    pending_confirm_tokens[key] = token
+
+    post = await get_post(code)
+    if not post:
+        await message.answer("❌ Post not found.")
+        return
+
+    conf_msg = await message.answer("✅ <b>Confirming...</b>")
+    asyncio.create_task(_auto_delete(conf_msg.chat.id, conf_msg.message_id))
+    await asyncio.sleep(0.4)
+    await _deliver(message.chat.id, code, message.from_user.id)
+
+@router.message(F.text.regexp(r"^[A-Za-z0-9]{17}$"))
+async def handle_pasted_code(message: Message, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state is not None:
+        return
+    code = message.text.strip()
+    post = await get_post(code)
+    if not post:
+        await message.answer("❌ Invalid code or video deleted.")
+        return
+    v_msg = await message.answer("✅ <b>Code Verified!</b> Sending your file...")
+    asyncio.create_task(_auto_delete(v_msg.chat.id, v_msg.message_id))
+    await _deliver(message.chat.id, code, message.from_user.id)
+
+async def _deliver(chat_id: int, code: str, user_id: int):
+    post = await get_post(code)
+    files = await get_post_files(code)
+    if not post or not files:
+        await bot.send_message(chat_id, "⚠️ Files not available.")
+        return
+    reward = float(await get_setting("view_reward", str(VIEW_REWARD)))
+    if await add_view_unique(code, user_id):
+        await execute("UPDATE posts SET views = views + 1 WHERE code=?", (code,))
+        if not post.get("is_admin"):
+            await add_balance(post["owner_id"], reward)
+    
+    info_msg = await bot.send_message(chat_id, f"📥 <b>{esc(post['title'])}</b>\n\nSending {len(files)} file(s). ⚠️ Auto-delete in 20 min.")
+    asyncio.create_task(_auto_delete(info_msg.chat.id, info_msg.message_id))
+
+    for f in files:
+        try:
+            sent = None
+            cap = esc(post["title"])
+            if f["file_type"] == "video": sent = await bot.send_video(chat_id, f["file_id"], caption=f"🎬 {cap}", protect_content=True)
+            elif f["file_type"] == "audio": sent = await bot.send_audio(chat_id, f["file_id"], caption=f"🎵 {cap}", protect_content=True)
+            elif f["file_type"] == "photo": sent = await bot.send_photo(chat_id, f["file_id"], caption=f"🖼 {cap}", protect_content=True)
+            else: sent = await bot.send_document(chat_id, f["file_id"], caption=f"📄 {cap}", protect_content=True)
+            if sent: asyncio.create_task(_auto_delete(sent.chat.id, sent.message_id))
+        except Exception as e:
+            logger.error(f"deliver: {e}")
+
+async def _auto_delete(chat_id: int, mid: int):
+    await asyncio.sleep(AUTO_DELETE_SECONDS)
+    try: await bot.delete_message(chat_id, mid)
+    except: pass
+
+# =========================================================================
+# USER UPLOAD & MY UPLOADS
+# =========================================================================
+@router.callback_query(F.data == "user_upload")
+async def cb_upload(call: CallbackQuery, state: FSMContext):
+    await state.set_state(UserStates.uploading_files)
+    await state.update_data(files=[], edit_code=None)
+    await safe_edit(call, f"📤 <b>UPLOAD CONTENT</b>\n\nSend files one by one (max {MAX_USER_FILES}), then tap DONE.", reply_markup=done_upload_kb("user_files_done"))
+
+@router.callback_query(F.data == "user_files_done", UserStates.uploading_files)
+async def cb_files_done(call: CallbackQuery, state: FSMContext):
+    files = (await state.get_data()).get("files", [])
+    if not files:
+        await call.answer("Send at least one file.", show_alert=True)
+        return
+    await state.set_state(UserStates.waiting_title)
+    await safe_edit(call, "✏️ Send a <b>title</b>:")
+
+@router.message(UserStates.uploading_files)
+async def recv_user_file(message: Message, state: FSMContext):
+    data = await state.get_data()
+    files = data.get("files", [])
+    if len(files) >= MAX_USER_FILES:
+        await message.answer(f"Max {MAX_USER_FILES} files. Tap DONE.")
+        return
+    t = i = n = None
+    if message.video: t, i, n = "video", message.video.file_id, message.video.file_name
+    elif message.document: t, i, n = "document", message.document.file_id, message.document.file_name
+    elif message.audio: t, i, n = "audio", message.audio.file_id, message.audio.file_name
+    elif message.photo: t, i, n = "photo", message.photo[-1].file_id, None
+    elif message.animation: t, i, n = "document", message.animation.file_id, None
+    else:
+        await message.answer("⚠️ Unsupported.")
+        return
+    files.append({"type": t, "id": i, "name": n})
+    await state.update_data(files=files)
+    await message.answer(f"✅ File {len(files)} received.")
+
+@router.message(UserStates.waiting_title)
+async def recv_user_title(message: Message, state: FSMContext):
+    title = (message.text or "").strip()
+    if not title:
+        await message.answer("Send a valid title.")
+        return
+    data = await state.get_data()
+    edit_code = data.get("edit_code")
+
+    if edit_code:
+        await execute("UPDATE posts SET title=? WHERE code=?", (title, edit_code))
+        await state.clear()
+        await message.answer(f"✅ Title updated: <b>{esc(title)}</b>", reply_markup=back_kb("my_uploads"))
+        return
+
+    await state.update_data(title=title)
+    await state.set_state(UserStates.waiting_thumb)
+    await message.answer("🖼 Send a <b>thumbnail</b> photo, or type <code>skip</code>:")
+
+@router.message(UserStates.waiting_thumb)
+async def recv_user_thumb(message: Message, state: FSMContext):
+    thumb = None
+    if message.photo: thumb = message.photo[-1].file_id
+    elif (message.text or "").strip().lower() == "skip": thumb = None
+    else:
+        await message.answer("Send a photo or type <code>skip</code>.")
+        return
+
+    data = await state.get_data()
+    files = data.get("files", [])
+    title = data.get("title", "Untitled")
+
+    code = await unique_code()
+    await execute("INSERT INTO posts (code, title, category, owner_id, is_admin, thumbnail_id, created_at, published) VALUES (?, ?, 'private', ?, 0, ?, ?, 0)", (code, title, message.from_user.id, thumb, int(time.time())))
+    for i, f in enumerate(files):
+        await execute("INSERT INTO post_files (post_code, file_id, file_type, file_name, order_idx) VALUES (?, ?, ?, ?, ?)", (code, f["id"], f["type"], f["name"], i))
+    
+    await execute("UPDATE users SET total_uploads = COALESCE(total_uploads,0) + 1 WHERE user_id=?", (message.from_user.id,))
+    username = await get_bot_username()
+    link = f"https://t.me/{username}?start=GET_{code}"
+    await state.clear()
+    await message.answer(f"✅ <b>UPLOAD COMPLETE!</b>\n\n📌 Title: <b>{esc(title)}</b>\n🔗 Share: <code>{link}</code>", reply_markup=back_kb("main"))
+
+@router.callback_query(F.data == "my_uploads")
+async def cb_my_uploads(call: CallbackQuery):
+    rows = await fetchall("SELECT * FROM posts WHERE owner_id=? AND deleted=0 ORDER BY created_at DESC LIMIT 20", (call.from_user.id,))
+    if not rows:
+        await call.answer("You haven't uploaded anything.", show_alert=True)
+        return
+    kb = [[InlineKeyboardButton(text=f"🎬 {truncate(p['title'], 35)} (👁 {p['views']})", callback_data=f"myedit:{p['code']}")] for p in rows]
+    kb.append([InlineKeyboardButton(text="🏠 MAIN MENU", callback_data="main")])
+    await safe_edit(call, f"📁 <b>MY UPLOADS</b> ({len(rows)})\n\nTap to manage:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+# =========================================================================
+# WITHDRAW SYSTEM
+# =========================================================================
+@router.callback_query(F.data == "withdraw")
+async def cb_withdraw(call: CallbackQuery, state: FSMContext):
+    await _start_withdraw(call.message.chat.id, call.from_user.id, state, edit_call=call)
+
+@router.message(Command("withdraw"))
+async def cmd_withdraw(message: Message, state: FSMContext):
+    await _start_withdraw(message.chat.id, message.from_user.id, state)
+
+async def _start_withdraw(chat_id, user_id, state, edit_call=None):
+    u = await get_user_safe(user_id)
+    min_w = float(await get_setting("min_withdraw", str(DEFAULT_MIN_WITHDRAW)))
+    if float(u.get("balance", 0)) < min_w:
+        msg = f"⚠️ Minimum withdrawal is <b>${min_w}</b>.\nYour balance: <b>{fmt_money(u.get('balance', 0))}</b>"
+        if edit_call: await safe_edit(edit_call, msg, reply_markup=back_kb("main"))
+        else: await bot.send_message(chat_id, msg, reply_markup=back_kb("main"))
+        return
+    await state.set_state(WithdrawStates.waiting_amount)
+    text = f"💸 <b>WITHDRAW</b>\n\n💰 Balance: <b>{fmt_money(u.get('balance', 0))}</b>\n📉 Minimum: <b>${min_w}</b>\n\nEnter amount:"
+    if edit_call: await safe_edit(edit_call, text, reply_markup=back_kb("main"))
+    else: await bot.send_message(chat_id, text, reply_markup=back_kb("main"))
+
+@router.message(WithdrawStates.waiting_amount)
+async def wd_amount(message: Message, state: FSMContext):
+    try: amt = float((message.text or "").strip())
+    except ValueError:
+        await message.answer("Send a valid number.")
+        return
+    u = await get_user_safe(message.from_user.id)
+    min_w = float(await get_setting("min_withdraw", str(DEFAULT_MIN_WITHDRAW)))
+    if amt < min_w:
+        await message.answer(f"Minimum is ${min_w}.")
+        return
+    if amt > float(u.get("balance", 0)):
+        await message.answer("Insufficient balance.")
+        return
+    await state.update_data(amount=amt)
+    await state.set_state(WithdrawStates.waiting_method)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 BINANCE PAY", callback_data="wdm:Binance Pay")],
+        [InlineKeyboardButton(text="💎 USDT TRC20", callback_data="wdm:USDT TRC20")],
+        [InlineKeyboardButton(text="🏠 CANCEL", callback_data="main")],
+    ])
+    await message.answer("Select payment method:", reply_markup=kb)
+
+@router.callback_query(F.data.startswith("wdm:"), WithdrawStates.waiting_method)
+async def wd_method(call: CallbackQuery, state: FSMContext):
+    method = call.data.split(":", 1)[1]
+    await state.update_data(method=method)
+    await state.set_state(WithdrawStates.waiting_address)
+    await safe_edit(call, f"Send your <b>{esc(method)}</b> wallet address:")
+
+@router.message(WithdrawStates.waiting_address)
+async def wd_address(message: Message, state: FSMContext):
+    addr = (message.text or "").strip()
+    if len(addr) < 10:
+        await message.answer("Invalid address.")
+        return
+    data = await state.get_data()
+    amt, method = data["amount"], data["method"]
+    await execute("UPDATE users SET balance = COALESCE(balance,0) - ? WHERE user_id=?", (amt, message.from_user.id))
+    wid = await execute("INSERT INTO withdrawals (user_id, amount, method, address, status, created_at) VALUES (?, ?, ?, ?, 'pending', ?)", (message.from_user.id, amt, method, addr, int(time.time())))
+    await state.clear()
+    await message.answer(f"✅ <b>WITHDRAWAL SUBMITTED</b>\n\n🆔 ID: #{wid}\n💵 Amount: {fmt_money(amt)}\n💳 Method: {esc(method)}\n📮 Address: <code>{esc(addr)}</code>", reply_markup=back_kb("main"))
+    try:
+        await bot.send_message(ADMIN_CHAT_ID, f"💸 <b>NEW WITHDRAWAL</b>\nUser: <code>{message.from_user.id}</code>\nAmount: {fmt_money(amt)}\nMethod: {esc(method)}\nAddress: <code>{esc(addr)}</code>\nID: #{wid}", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ APPROVE", callback_data=f"wdapprove:{wid}"), InlineKeyboardButton(text="❌ REJECT", callback_data=f"wdreject:{wid}")]]))
+    except: pass
+
+# =========================================================================
+# ADMIN PANEL, FOLDER/SEASON DELETE CONFIRMATION & ADVANCED CONTROLS
+# =========================================================================
+@router.message(Command("admin"))
+async def cmd_admin(message: Message):
+    if not await is_admin_user(message.from_user.id):
+        return
+    await message.answer("⚙️ <b>ADMIN PANEL</b>", reply_markup=admin_menu_kb())
+
+@router.callback_query(F.data == "admin_panel")
+async def cb_admin_panel(call: CallbackQuery):
+    if not await is_admin_user(call.from_user.id):
+        return
+    await safe_edit(call, "⚙️ <b>ADMIN PANEL</b>", reply_markup=admin_menu_kb())
+
+# ফোল্ডার ম্যানেজমেন্ট ও ডিলিট করার সময় ইয়েস/নো কনফার্মেশন ফিচার
 @router.callback_query(F.data == "admin_manage_folders")
 async def cb_manage_folders(call: CallbackQuery):
-    if not await is_admin_user(call.from_user.id): return
+    if not await is_admin_user(call.from_user.id):
+        return
     kb = []
     for cat in ("movie", "viral", "anime"):
         kb.append([InlineKeyboardButton(text=f"📁 {CATEGORY_NAMES[cat]} Folders", callback_data=f"admfoldcat:{cat}")])
     kb.append([InlineKeyboardButton(text="🔙 BACK TO ADMIN", callback_data="admin_panel")])
-    await safe_edit(call, "📁 <b>MANAGE FOLDERS</b>\n\nফোল্ডার মোছার জন্য সিলেক্ট করুন:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    await safe_edit(call, "📁 <b>MANAGE FOLDERS & SEASONS</b>\n\nSelect category:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
 @router.callback_query(F.data.startswith("admfoldcat:"))
 async def cb_admfoldcat(call: CallbackQuery):
@@ -724,145 +1247,373 @@ async def cb_admfoldlang(call: CallbackQuery):
     kb = []
     if folders:
         for f in folders:
-            kb.append([InlineKeyboardButton(text=f"🗑 Delete: {f['name']}", callback_data=f"ask_delfold:{f['id']}")])
+            kb.append([InlineKeyboardButton(text=f"📁 {f['name']} (Delete)", callback_data=f"admdelefold_confirm:{f['id']}")])
     else:
         kb.append([InlineKeyboardButton(text="⚠️ No folders found", callback_data="noop")])
     kb.append([InlineKeyboardButton(text="🔙 BACK", callback_data=f"admfoldcat:{cat}")])
-    await safe_edit(call, "📁 <b>ডিলিট করতে চাওয়া ফোল্ডারটি সিলেক্ট করুন:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    await safe_edit(call, f"📁 <b>Delete Folders ({CATEGORY_NAMES[cat]} - {LANGUAGES[lang]}):</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
-@router.callback_query(F.data.startswith("ask_delfold:"))
-async def cb_ask_delete_folder(call: CallbackQuery):
+# ফোল্ডার ডিলিটের কনফার্মেশন (Yes / No)
+@router.callback_query(F.data.startswith("admdelefold_confirm:"))
+async def cb_adm_delete_folder_confirm(call: CallbackQuery):
     folder_id = int(call.data.split(":", 1)[1])
     folder = await fetchone("SELECT * FROM admin_folders WHERE id=?", (folder_id,))
     if not folder:
-        await call.answer("ফোল্ডার পাওয়া যায়নি।", show_alert=True)
+        await call.answer("Folder not found.", show_alert=True)
         return
-
+    
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Yes", callback_data=f"confirm_delfold:{folder_id}"), InlineKeyboardButton(text="❌ No", callback_data="admin_manage_folders")]
+        [InlineKeyboardButton(text="✅ হ্যাঁ (Yes, Delete)", callback_data=f"admdelefold_yes:{folder_id}")],
+        [InlineKeyboardButton(text="❌ না (No, Cancel)", callback_data="admin_manage_folders")]
     ])
-    await safe_edit(call, f"⚠️ <b>ফোল্ডার ডিলিট করতে চান?</b>\n\nফোল্ডারের নাম: <b>{esc(folder['name'])}</b>", reply_markup=kb)
+    await safe_edit(call, f"⚠️ আপনি কি নিশ্চিতভাবে <b>'{folder['name']}'</b> ফোল্ডারটি ডিলিট করতে চান?", reply_markup=kb)
 
-@router.callback_query(F.data.startswith("confirm_delfold:"))
-async def cb_confirm_delete_folder(call: CallbackQuery):
+@router.callback_query(F.data.startswith("admdelefold_yes:"))
+async def cb_adm_delete_folder_yes(call: CallbackQuery):
     folder_id = int(call.data.split(":", 1)[1])
-    await execute("UPDATE posts SET folder_id=0, subfolder_id=0 WHERE folder_id=? OR subfolder_id=?", (folder_id, folder_id))
-    await execute("DELETE FROM admin_folders WHERE id=? OR parent_id=?", (folder_id, folder_id))
+    await execute("UPDATE posts SET folder_id=0 WHERE folder_id=?", (folder_id,))
+    await execute("DELETE FROM admin_subfolders WHERE folder_id=?", (folder_id,))
+    await execute("DELETE FROM admin_folders WHERE id=?", (folder_id,))
     await call.answer("✅ ফোল্ডার সফলভাবে ডিলিট করা হয়েছে!", show_alert=True)
     await cb_manage_folders(call)
 
-# =========================================================================
-# FORWARD RESTRICTION & DIRECT FILE DELIVERY WITH LINK GENERATION
-# =========================================================================
-async def show_post_card(chat_id: int, code: str):
-    post = await get_post(code)
-    if not post:
-        await bot.send_message(chat_id, "⚠️ Post not found.")
+# মুভি রিকোয়েস্ট দেখার ও ম্যানেজ করার ফিচার
+@router.callback_query(F.data == "admin_movie_requests")
+async def cb_admin_movie_requests(call: CallbackQuery):
+    if not await is_admin_user(call.from_user.id):
         return
-    text = f"🎬 <b>{esc(post['title'])}</b>\n\n👇 Watch the ad to unlock:"
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="▶️ WATCH AD", url=f"{MINI_APP_LINK_BASE}{code}")],
-        [InlineKeyboardButton(text="🔙 BACK", callback_data="main")],
-    ])
-    if post.get("thumbnail_id"):
-        try:
-            sent_msg = await bot.send_photo(chat_id, post["thumbnail_id"], caption=text, reply_markup=kb)
-            asyncio.create_task(_auto_delete(sent_msg.chat.id, sent_msg.message_id))
-            return
-        except: pass
-    sent_msg = await bot.send_message(chat_id, text, reply_markup=kb)
-    asyncio.create_task(_auto_delete(sent_msg.chat.id, sent_msg.message_id))
-
-@router.callback_query(F.data.startswith("view:"))
-async def cb_view(call: CallbackQuery):
-    code = call.data.split(":", 1)[1]
-    try: await call.message.delete()
-    except: pass
-    await show_post_card(call.message.chat.id, code)
-
-@router.message(F.web_app_data)
-async def handle_web_app_data(message: Message):
-    try: data = json.loads(message.web_app_data.data)
-    except: return
-    code = str(data.get("code", "")).replace("GET_", "")
-    await _deliver(message.chat.id, code, message.from_user.id)
-
-@router.message(F.text.regexp(r"^[A-Za-z0-9]{17}$"))
-async def handle_pasted_code(message: Message, state: FSMContext):
-    if await state.get_state() is not None: return
-    code = message.text.strip()
-    await _deliver(message.chat.id, code, message.from_user.id)
-
-async def _deliver(chat_id: int, code: str, user_id: int):
-    post = await get_post(code)
-    files = await get_post_files(code)
-    if not post or not files:
-        await bot.send_message(chat_id, "⚠️ Files not available.")
+    reqs = await fetchall("SELECT * FROM movie_requests ORDER BY id DESC LIMIT 20")
+    if not reqs:
+        await safe_edit(call, "🎥 <b>MOVIE REQUESTS</b>\n\nকোনো রিকোয়েস্ট নেই।", reply_markup=back_kb("admin_panel"))
         return
     
-    username = await get_bot_username()
-    gen_link = f"https://t.me/{username}?start=GET_{code}"
+    text = "🎥 <b>USER MOVIE REQUESTS:</b>\n\n"
+    kb = []
+    for r in reqs:
+        text += f"👤 <a href='tg://user?id={r['user_id']}'>{r['username']}</a>: <b>{esc(r['request_text'])}</b>\n"
+        kb.append([InlineKeyboardButton(text=f"✉️ ম্যাসেজ পাঠান ({r['username']})", callback_data=f"adm_reply_req:{r['user_id']}")])
+    kb.append([InlineKeyboardButton(text="🔙 ব্যাক", callback_data="admin_panel")])
+    await safe_edit(call, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
-    # Forwards logic notice / link footer
-    caption_text = (
-        f"🎬 <b>{esc(post['title'])}</b>\n\n"
-        f"⚠️ <i>এই ভিডিওটি অন্য কারো কাছে ফরওয়ার্ড করলে কাজ করবে না। বটে জয়েন করে দেখতে হবে।</i>\n"
-        f"🔗 <b>Get Link:</b> {gen_link}"
-    )
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔗 GET FILE LINK", url=gen_link)]])
-
-    for f in files:
-        try:
-            # protect_content=False (Allows Save to Gallery, but restrict via forwarded caption notice)
-            if f["file_type"] == "video":
-                sent = await bot.send_video(chat_id, f["file_id"], caption=caption_text, reply_markup=kb, protect_content=False)
-            elif f["file_type"] == "photo":
-                sent = await bot.send_photo(chat_id, f["file_id"], caption=caption_text, reply_markup=kb, protect_content=False)
-            else:
-                sent = await bot.send_document(chat_id, f["file_id"], caption=caption_text, reply_markup=kb, protect_content=False)
-            if sent: asyncio.create_task(_auto_delete(sent.chat.id, sent.message_id))
-        except Exception as e: logger.error(f"deliver err: {e}")
-
-async def _auto_delete(chat_id: int, mid: int):
-    await asyncio.sleep(AUTO_DELETE_SECONDS)
-    try: await bot.delete_message(chat_id, mid)
-    except: pass
-
-# =========================================================================
-# ADD ADMIN & ADMIN WORKFLOW
-# =========================================================================
-@router.callback_query(F.data == "admin_add_new")
-async def cb_add_admin_start(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_CHAT_ID: return
-    await state.set_state(AdminStates.waiting_add_admin)
-    await safe_edit(call, "➕ <b>ADD NEW ADMIN</b>\n\nনতুন এডমিনের <b>Chat ID</b> লিখে পাঠান:", reply_markup=back_kb("admin_panel"))
-
-@router.message(AdminStates.waiting_add_admin)
-async def recv_new_admin_id(message: Message, state: FSMContext):
-    try: new_id = int((message.text or "").strip())
-    except:
-        await message.answer("সঠিক আইডি দিন।")
+# চ্যাট আইডি দিয়ে নতুন অ্যাডমিন যুক্ত করা
+@router.callback_query(F.data == "admin_manage_admins")
+async def cb_manage_admins(call: CallbackQuery, state: FSMContext):
+    if not await is_admin_user(call.from_user.id):
         return
-    await execute("UPDATE users SET is_admin=1 WHERE user_id=?", (new_id,))
+    admins = await fetchall("SELECT * FROM admins")
+    text = "👑 <b>CURRENT ADMINS:</b>\n\n"
+    for a in admins:
+        text += f"🔹 Chat ID: <code>{a['user_id']}</code>\n"
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ নতুন অ্যাডমিন যোগ করুন", callback_data="adm_add_admin")],
+        [InlineKeyboardButton(text="🔙 ব্যাক", callback_data="admin_panel")]
+    ])
+    await safe_edit(call, text, reply_markup=kb)
+
+@router.callback_query(F.data == "adm_add_admin")
+async def cb_add_admin_prompt(call: CallbackQuery, state: FSMContext):
+    await state.set_state(AdminStates.waiting_admin_add)
+    await safe_edit(call, "👑 নতুন অ্যাডমিনের <b>Chat ID</b> লিখে পাঠান:", reply_markup=back_kb("admin_panel"))
+
+@router.message(AdminStates.waiting_admin_add)
+async def recv_new_admin_id(message: Message, state: FSMContext):
+    try: new_aid = int((message.text or "").strip())
+    except ValueError:
+        await message.answer("সঠিক চ্যাট আইডি দিন।")
+        return
+    await execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (new_aid,))
     await state.clear()
-    await message.answer(f"✅ <code>{new_id}</code> সফলভাবে এডমিন হিসেবে যুক্ত হয়েছে!", reply_markup=back_kb("admin_panel"))
+    await message.answer(f"✅ চ্যাট আইডি <code>{new_aid}</code> সফলভাবে অ্যাডমিন হিসেবে যুক্ত হয়েছে!", reply_markup=back_kb("admin_panel"))
 
-@router.message(Command("admin"))
-async def cmd_admin(message: Message):
-    if await is_admin_user(message.from_user.id):
-        await message.answer("⚙️ <b>ADMIN PANEL</b>", reply_markup=admin_menu_kb())
+# ব্যাকআপ ও অন্যান্য অ্যাডমিন হ্যান্ডলার
+@router.message(Command("backup"))
+async def cmd_backup(message: Message):
+    if not await is_admin_user(message.from_user.id):
+        return
+    try:
+        async with aiosqlite.connect(DB_PATH) as d:
+            await d.execute("PRAGMA wal_checkpoint(FULL)")
+            await d.commit()
+        await bot.send_document(ADMIN_CHAT_ID, FSInputFile(DB_PATH), caption=f"📥 Manual Backup\n🕒 {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())}")
+    except Exception as e:
+        await message.answer(f"❌ Failed: {e}")
 
-@router.callback_query(F.data == "admin_panel")
-async def cb_admin_panel(call: CallbackQuery):
-    if await is_admin_user(call.from_user.id):
-        await safe_edit(call, "⚙️ <b>ADMIN PANEL</b>", reply_markup=admin_menu_kb())
+@router.message(Command("stats"))
+async def cmd_stats(message: Message):
+    if not await is_admin_user(message.from_user.id):
+        return
+    await _show_stats(message.chat.id)
 
-# =========================================================================
-# WEB SERVER & BACKGROUND TASKS
-# =========================================================================
+@router.callback_query(F.data == "admin_stats")
+async def cb_stats(call: CallbackQuery):
+    if not await is_admin_user(call.from_user.id):
+        return
+    await _show_stats(call.message.chat.id, edit_call=call)
+
+async def _show_stats(chat_id, edit_call=None):
+    u = await fetchone("SELECT COUNT(*) as c FROM users")
+    p = await fetchone("SELECT COUNT(*) as c FROM posts WHERE published=1 AND deleted=0")
+    v = await fetchone("SELECT COUNT(*) as c FROM views")
+    b = await fetchone("SELECT COALESCE(SUM(balance),0) as s FROM users")
+    text = f"📊 <b>STATISTICS</b>\n\n👥 Users: <b>{u['c'] if u else 0}</b>\n📄 Posts: <b>{p['c'] if p else 0}</b>\n👁 Views: <b>{v['c'] if v else 0}</b>\n💰 Balance: <b>{fmt_money(b['s'] if b else 0)}</b>"
+    kb = back_kb("admin_panel")
+    if edit_call: await safe_edit(edit_call, text, reply_markup=kb)
+    else: await bot.send_message(chat_id, text, reply_markup=kb)
+
+# কন্টেন্ট পাবলিশিং উইথ নেস্টেড ফোল্ডার (Season 1, Season 2 ইত্যাদি)
+@router.callback_query(F.data == "admin_publish")
+async def cb_publish(call: CallbackQuery, state: FSMContext):
+    if not await is_admin_user(call.from_user.id):
+        return
+    await state.clear()
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎬 MOVIE", callback_data="pubcat:movie")],
+        [InlineKeyboardButton(text="🔥 VIRAL VIDEO", callback_data="pubcat:viral")],
+        [InlineKeyboardButton(text="🎌 ANIME", callback_data="pubcat:anime")],
+        [InlineKeyboardButton(text="❌ CANCEL", callback_data="admin_panel")],
+    ])
+    await safe_edit(call, "📤 <b>PUBLISH CONTENT</b>\n\nSelect category:", reply_markup=kb)
+
+@router.callback_query(F.data.startswith("pubcat:"))
+async def cb_pubcat(call: CallbackQuery, state: FSMContext):
+    cat = call.data.split(":", 1)[1]
+    await state.set_state(AdminStates.uploading_files)
+    await state.update_data(category=cat, files=[], thumb=None, folder_id=0, subfolder_id=0, language="")
+    await safe_edit(call, f"Category: <b>{CATEGORY_NAMES[cat]}</b>\n\nUpload files (1–{MAX_ADMIN_FILES}). Then tap DONE.", reply_markup=done_upload_kb("pub_files_done"))
+
+@router.message(AdminStates.uploading_files)
+async def admin_recv_file(message: Message, state: FSMContext):
+    if not await is_admin_user(message.from_user.id):
+        return
+    data = await state.get_data()
+    files = data.get("files", [])
+    if len(files) >= MAX_ADMIN_FILES:
+        await message.answer("Max reached. Tap DONE.")
+        return
+    t = i = n = None
+    if message.video: t, i, n = "video", message.video.file_id, message.video.file_name
+    elif message.document: t, i, n = "document", message.document.file_id, message.document.file_name
+    elif message.audio: t, i, n = "audio", message.audio.file_id, message.audio.file_name
+    elif message.photo: t, i, n = "photo", message.photo[-1].file_id, None
+    elif message.animation: t, i, n = "document", message.animation.file_id, None
+    else:
+        await message.answer("⚠️ Unsupported.")
+        return
+    files.append({"type": t, "id": i, "name": n})
+    await state.update_data(files=files)
+    await message.answer(f"✅ File {len(files)} received.")
+
+@router.callback_query(F.data == "pub_files_done")
+async def cb_pub_files_done(call: CallbackQuery, state: FSMContext):
+    files = (await state.get_data()).get("files", [])
+    if not files:
+        await call.answer("Upload at least one file.", show_alert=True)
+        return
+    await state.set_state(AdminStates.waiting_title)
+    await safe_edit(call, "✏️ Send the <b>title</b>:")
+
+@router.message(AdminStates.waiting_title)
+async def admin_recv_title(message: Message, state: FSMContext):
+    if not await is_admin_user(message.from_user.id):
+        return
+    title = (message.text or "").strip()
+    if not title:
+        await message.answer("Send a valid title.")
+        return
+    await state.update_data(title=title)
+    await state.set_state(AdminStates.waiting_thumb)
+    await message.answer("🖼 Send a <b>thumbnail</b> photo, or type <code>skip</code>:")
+
+@router.message(AdminStates.waiting_thumb)
+async def admin_recv_thumb(message: Message, state: FSMContext):
+    if not await is_admin_user(message.from_user.id):
+        return
+    thumb = None
+    if message.photo: thumb = message.photo[-1].file_id
+    elif (message.text or "").strip().lower() == "skip": thumb = None
+    else:
+        await message.answer("Send a photo or type <code>skip</code>.")
+        return
+    await state.update_data(thumb=thumb)
+    
+    data = await state.get_data()
+    cat = data.get("category")
+
+    if cat in ("movie", "anime", "viral"):
+        kb = []
+        for lang_code, lang_name in LANGUAGES.items():
+            kb.append([InlineKeyboardButton(text=lang_name, callback_data=f"setpublang:{lang_code}")])
+        await message.answer("🌐 Select Language for this content:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    else:
+        await show_confirm_preview(message, state)
+
+@router.callback_query(F.data.startswith("setpublang:"))
+async def cb_set_pub_lang(call: CallbackQuery, state: FSMContext):
+    lang_code = call.data.split(":", 1)[1]
+    await state.update_data(language=lang_code)
+    data = await state.get_data()
+    cat = data.get("category")
+    
+    folders = await fetchall("SELECT * FROM admin_folders WHERE admin_id=? AND category=? AND language=?", (ADMIN_CHAT_ID, cat, lang_code))
+    buttons = []
+    for f in folders:
+        buttons.append([InlineKeyboardButton(text=f"📁 {f['name']}", callback_data=f"admin_select_folder:{f['id']}")])
+    buttons.append([InlineKeyboardButton(text="➕ ফোল্ডার তৈরি করুন", callback_data="admin_create_folder")])
+    buttons.append([InlineKeyboardButton(text="➡️ সরাসরি আপলোড", callback_data="admin_select_folder:0")])
+    await safe_edit(call, "ফোল্ডার সিলেক্ট করুন:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@router.callback_query(F.data == "admin_create_folder")
+async def process_admin_create_folder(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(AdminStates.waiting_folder_name)
+    await callback.message.edit_text("✏️ নতুন ফোল্ডারের নাম (যেমন: Season 1) লিখে পাঠান:")
+    await callback.answer()
+
+@router.message(AdminStates.waiting_folder_name)
+async def save_admin_folder_name(message: Message, state: FSMContext):
+    if not await is_admin_user(message.from_user.id):
+        return
+    folder_name = (message.text or "").strip()
+    data = await state.get_data()
+    folder_id = await execute("INSERT INTO admin_folders (admin_id, category, language, name) VALUES (?, ?, ?, ?)", (ADMIN_CHAT_ID, data.get("category"), data.get("language"), folder_name))
+    await state.update_data(folder_id=folder_id)
+    
+    # সাব-ফোল্ডার বা সিজন ফোল্ডারের ভেতর ফোল্ডার তৈরির অপশন
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ এর ভেতরে আরেকটি সাব-ফোল্ডার (Season 2 ইত্যাদি) তৈরি করুন", callback_data="admin_create_subfolder")],
+        [InlineKeyboardButton(text="✅ এই ফোল্ডারেই রাখুন", callback_data="admin_proceed_preview")]
+    ])
+    await message.answer(f"✅ <b>'{folder_name}'</b> ফোল্ডার তৈরি হয়েছে। আরও ফোল্ডার যোগ করতে চান?", reply_markup=kb)
+
+@router.callback_query(F.data == "admin_create_subfolder")
+async def cb_create_subfolder(call: CallbackQuery, state: FSMContext):
+    await state.set_state(AdminStates.waiting_subfolder_name)
+    await safe_edit(call, "✏️ সাব-ফোল্ডারের নাম (যেমন: Episode Part 1) লিখে পাঠান:")
+
+@router.message(AdminStates.waiting_subfolder_name)
+async def save_subfolder_name(message: Message, state: FSMContext):
+    if not await is_admin_user(message.from_user.id):
+        return
+    sf_name = (message.text or "").strip()
+    data = await state.get_data()
+    sf_id = await execute("INSERT INTO admin_subfolders (folder_id, name) VALUES (?, ?)", (data.get("folder_id"), sf_name))
+    await state.update_data(subfolder_id=sf_id)
+    await message.answer(f"✅ সাব-ফোল্ডার <b>'{sf_name}'</b> যুক্ত হয়েছে!")
+    await show_confirm_preview(message, state)
+
+@router.callback_query(F.data == "admin_proceed_preview")
+async def cb_proceed_preview(call: CallbackQuery, state: FSMContext):
+    await show_confirm_preview(call.message, state, is_callback=True)
+
+@router.callback_query(F.data.startswith("admin_select_folder:"))
+async def process_admin_folder_selection(callback: CallbackQuery, state: FSMContext):
+    folder_id = int(callback.data.split(":")[1])
+    await state.update_data(folder_id=folder_id)
+    await callback.answer()
+    await show_confirm_preview(callback.message, state, is_callback=True)
+
+async def show_confirm_preview(event_msg: Message, state: FSMContext, is_callback: bool = False):
+    await state.set_state(AdminStates.waiting_confirm)
+    data = await state.get_data()
+    thumb = data.get("thumb")
+    
+    folder_info = "None"
+    if data.get("folder_id"):
+        f_row = await fetchone("SELECT name FROM admin_folders WHERE id=?", (data["folder_id"],))
+        if f_row: folder_info = f_row["name"]
+
+    preview = f"📋 <b>CONFIRM PUBLISH</b>\n\n📂 Category: {CATEGORY_NAMES[data['category']]}\n📁 Folder: {folder_info}\n📄 Files: {len(data['files'])}\n📝 Title: <b>{esc(data['title'])}</b>\n"
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🚀 PUBLISH NOW", callback_data="pub_confirm")], [InlineKeyboardButton(text="❌ CANCEL", callback_data="admin_panel")]])
+    
+    if thumb:
+        try:
+            await event_msg.answer_photo(thumb, caption=preview, reply_markup=kb)
+            return
+        except: pass
+    if is_callback:
+        await safe_edit(event_msg, preview, reply_markup=kb)
+    else:
+        await event_msg.answer(preview, reply_markup=kb)
+
+@router.callback_query(F.data == "pub_confirm")
+async def cb_pub_confirm(call: CallbackQuery, state: FSMContext):
+    if not await is_admin_user(call.from_user.id):
+        return
+    data = await state.get_data()
+    files = data.get("files", [])
+    title = data.get("title", "Untitled")
+    category = data.get("category", "movie")
+    language = data.get("language", "")
+    thumb = data.get("thumb")
+    folder_id = data.get("folder_id", 0)
+    subfolder_id = data.get("subfolder_id", 0)
+    
+    if not files: return
+    code = await unique_code()
+    await execute("INSERT INTO posts (code, title, category, language, owner_id, is_admin, thumbnail_id, created_at, published, folder_id, subfolder_id) VALUES (?, ?, ?, ?, ?, 1, ?, ?, 1, ?, ?)", (code, title, category, language, ADMIN_CHAT_ID, thumb, int(time.time()), folder_id, subfolder_id))
+    for i, f in enumerate(files):
+        await execute("INSERT INTO post_files (post_code, file_id, file_type, file_name, order_idx) VALUES (?, ?, ?, ?, ?)", (code, f["id"], f["type"], f["name"], i))
+    
+    username = await get_bot_username()
+    link = f"https://t.me/{username}?start=GET_{code}"
+    share = f"🎬 <b>{esc(title)}</b>\n\n📂 {CATEGORY_NAMES[category]}\n🔗 Link: {link}"
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📥 GET FILE", url=link)]])
+    
+    target_channel = CATEGORY_CHANNELS[category]
+    try:
+        if thumb: await bot.send_photo(target_channel, thumb, caption=share, reply_markup=kb)
+        else: await bot.send_message(target_channel, share, reply_markup=kb)
+    except: pass
+            
+    await state.clear()
+    await safe_edit(call, f"✅ <b>PUBLISHED!</b>\n\n🔗 Link: <code>{link}</code>", reply_markup=back_kb("admin_panel"))
+
+# ব্রডকাস্ট সিস্টেম
+@router.callback_query(F.data == "admin_broadcast")
+async def cb_broadcast(call: CallbackQuery, state: FSMContext):
+    if not await is_admin_user(call.from_user.id):
+        return
+    await state.set_state(AdminStates.waiting_broadcast)
+    await safe_edit(call, "📢 <b>BROADCAST</b>\n\nসকল ইউজারের কাছে পাঠানোর জন্য মেসেজটি পাঠান:", reply_markup=back_kb("admin_panel"))
+
+@router.message(AdminStates.waiting_broadcast)
+async def recv_broadcast(message: Message, state: FSMContext):
+    if not await is_admin_user(message.from_user.id):
+        return
+    users = await fetchall("SELECT user_id FROM users WHERE banned=0")
+    await state.clear()
+    await message.answer(f"📤 Broadcasting to {len(users)} users...")
+    ok = fail = 0
+    for u in users:
+        try:
+            await message.copy_to(u["user_id"])
+            ok += 1
+            await asyncio.sleep(0.05)
+        except TelegramRetryAfter as e:
+            await asyncio.sleep(e.retry_after + 1)
+            try:
+                await message.copy_to(u["user_id"])
+                ok += 1
+            except: fail += 1
+        except: fail += 1
+    await message.answer(f"✅ Done!\nSuccess: {ok} | Failed: {fail}", reply_markup=back_kb("admin_panel"))
+
+# ব্যাকআপ ওয়ার্কার ও ওয়েব সার্ভার
+async def backup_worker():
+    await asyncio.sleep(3)
+    while True:
+        try:
+            await asyncio.sleep(BACKUP_INTERVAL_SECONDS)
+            async with aiosqlite.connect(DB_PATH) as d:
+                await d.execute("PRAGMA wal_checkpoint(FULL)")
+                await d.commit()
+        except asyncio.CancelledError: break
+        except Exception as e:
+            logger.error(f"backup loop: {e}")
+            await asyncio.sleep(5)
+
 async def handle_ping(request):
-    return web.Response(text="MovieVerse Bot AI Edition is Running 24/7!")
+    return web.Response(text="MovieVerse Bot is running 24/7!")
 
 async def start_web_server():
     try:
@@ -873,19 +1624,40 @@ async def start_web_server():
         port = int(os.environ.get("PORT", 10000))
         site = web.TCPSite(runner, "0.0.0.0", port)
         await site.start()
-    except Exception as e: logger.error(f"Web server error: {e}")
+    except Exception as e:
+        logger.error(f"Web server error: {e}")
 
+@router.message()
+async def fallback(message: Message):
+    is_adm = await is_admin_user(message.from_user.id)
+    await message.answer("ℹ️ Use /start to see the main menu.", reply_markup=main_menu_kb(is_adm))
+
+# =========================================================================
+# MAIN
+# =========================================================================
 async def main():
-    await init_db()
-    dp.message.middleware(AntiSpamMiddleware())
-    dp.callback_query.middleware(AntiSpamMiddleware())
-    dp.message.middleware(ForceSubMiddleware())
-    dp.callback_query.middleware(ForceSubMiddleware())
-    dp.include_router(router)
-    asyncio.create_task(start_web_server())
-    logger.info("Bot starting polling...")
-    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+    try:
+        await init_db()
+        dp.message.middleware(AntiSpamMiddleware())
+        dp.callback_query.middleware(AntiSpamMiddleware())
+        dp.message.middleware(ForceSubMiddleware())
+        dp.callback_query.middleware(ForceSubMiddleware())
+        dp.include_router(router)
+
+        await register_commands()
+        asyncio.create_task(backup_worker())
+        asyncio.create_task(start_web_server())
+
+        me = await bot.get_me()
+        logger.info(f"Logged in as @{me.username}")
+        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+    except Exception:
+        with open("crash.log", "w", encoding="utf-8") as f:
+            traceback.print_exc(file=f)
+        raise
 
 if __name__ == "__main__":
-    try: asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit): logger.info("Bot stopped.")
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        pass
