@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MovieVerse Bot — Updated with AI Search, Nested Folders, Movie Requests, Pagination & Advanced Admin Controls
+MovieVerse Bot — Fully Fixed & Enhanced Edition
+Includes:
+ - Multi-language AI Smart Search (Season/Episode extraction)
+ - Fixed 60-Second Auto Backup & DB Restore Handler
+ - File Move & Copy between Folders/Seasons
+ - All User & Admin Callbacks fully working
+ - Fixed 24/7 Web Server Integration
 """
 
 import asyncio
@@ -9,12 +15,13 @@ import html
 import json
 import logging
 import os
+import re
 import time
 import secrets
 import string
 import shutil
 import traceback
-from typing import Optional, Union
+from typing import Optional, Union, List
 
 import aiosqlite
 from aiogram import Bot, Dispatcher, F, Router, BaseMiddleware
@@ -41,15 +48,13 @@ BOT_TOKEN = os.environ.get(
     "8999148581:AAExMi5DcfVS06RzED5R0qhRJPWKknczotA",
 )
 ADMIN_CHAT_ID = int(os.environ.get("ADMIN_CHAT_ID", "8806711354"))
-
-# আপনার দেওয়া এআই এপিআই কোডটি এখানে সেট করা হলো
 AI_API_KEY = "AQ.Ab8RN6KQBJ1Br-6ih2Wz3CWx3zl--IHUWubd3ErCj6sULshNhQ"
 
 DB_PATH = os.path.join(os.getcwd(), "movieverse.db")
 
-AUTO_DELETE_SECONDS = 1200  
-BACKUP_INTERVAL_SECONDS = 60
-ANTI_SPAM_COOLDOWN = 1.0
+AUTO_DELETE_SECONDS = 1200  # ২০ মিনিট
+BACKUP_INTERVAL_SECONDS = 60  # প্রতি ১ মিনিট (৬০ সেকেন্ড) পর পর ব্যাকআপ
+ANTI_SPAM_COOLDOWN = 0.5
 
 MINI_APP_LINK_BASE = "https://t.me/Nsyt83325bot_bot/httpsyhcff5t53tu6botblogspot?startapp=GET_"
 
@@ -84,7 +89,7 @@ DEFAULT_MIN_WITHDRAW = 10.0
 DAILY_BONUS = 0.001
 MAX_USER_FILES = 5
 MAX_ADMIN_FILES = 100
-ITEMS_PER_PAGE = 15
+ITEMS_PER_PAGE = 10
 
 logging.basicConfig(
     level=logging.INFO,
@@ -118,14 +123,12 @@ class AdminStates(StatesGroup):
     waiting_folder_name = State()
     waiting_subfolder_name = State()
     waiting_admin_add = State()
-    waiting_reply_message = State()
 
 class UserStates(StatesGroup):
     uploading_files = State()
     waiting_title = State()
     waiting_thumb = State()
     waiting_search = State()
-    waiting_movie_request = State()
 
 class WithdrawStates(StatesGroup):
     waiting_amount = State()
@@ -133,7 +136,7 @@ class WithdrawStates(StatesGroup):
     waiting_address = State()
 
 # =========================================================================
-# UTILS & AI SEARCH LOGIC
+# HELPER UTILS
 # =========================================================================
 async def safe_edit(
     event: Union[Message, CallbackQuery],
@@ -193,21 +196,70 @@ async def unique_code() -> str:
         if not await fetchone("SELECT 1 FROM posts WHERE code=?", (c,)):
             return c
 
-# সিম্পল ফাজি ম্যাচিং ও এআই এনালাইসিস ফাংশন
-async def ai_smart_search(query: str) -> list:
-    query = query.strip().lower()
-    all_posts = await fetchall("SELECT * FROM posts WHERE published=1 AND deleted=0")
-    matches = []
+# =========================================================================
+# AI MULTI-LANGUAGE SMART SEARCH ENGINE
+# =========================================================================
+def parse_season_episode(text: str):
+    """লেখা থেকে সিজন ও পর্বের নম্বর ফিল্টার করার স্মার্ট পার্সার"""
+    text_lower = text.lower()
     
-    q_words = set(query.split())
-    for p in all_posts:
-        title = p["title"].lower()
-        title_words = set(title.split())
+    # বাংলা সংখ্যা রূপান্তর
+    bn_digits = {'০': '0', '১': '1', '২': '2', '৩': '3', '৪': '4', '৫': '5', '৬': '6', '৭': '7', '৮': '8', '৯': '9'}
+    for b, e in bn_digits.items():
+        text_lower = text_lower.replace(b, e)
         
-        # হুবহু মিল বা আংশিক মিল চেক
-        if query in title or any(w in title_words for w in q_words):
-            matches.append(p)
-    return matches
+    season = None
+    episode = None
+    
+    # সিজন এবং পর্বের প্যাটার্ন ম্যাচিং
+    s_match = re.search(r'(?:season|s|সিজন)\s*[:=\-]?\s*(\d+)', text_lower)
+    if s_match:
+        season = int(s_match.group(1))
+        
+    e_match = re.search(r'(?:episode|ep|e|পর্ব|এপিসোড)\s*[:=\-]?\s*(\d+)', text_lower)
+    if e_match:
+        episode = int(e_match.group(1))
+        
+    # সাধারণ সংখ্যা ফিল্টারিং (যেমন: নারুতো ১০)
+    if not episode:
+        nums = re.findall(r'\b\d+\b', text_lower)
+        if nums and not season:
+            episode = int(nums[0])
+            
+    # মূল নাম বের করা
+    clean_title = re.sub(r'(?:season|s|সিজন|episode|ep|e|পর্ব|এপিসোড)\s*[:=\-]?\s*\d+', '', text_lower)
+    clean_title = re.sub(r'\b\d+\b', '', clean_title).strip()
+    
+    return clean_title, season, episode
+
+async def ai_multi_language_search(user_query: str) -> List[dict]:
+    clean_q, req_s, req_e = parse_season_episode(user_query)
+    all_posts = await fetchall("SELECT * FROM posts WHERE published=1 AND deleted=0")
+    
+    matched_posts = []
+    
+    for post in all_posts:
+        title = post["title"].lower()
+        title_clean, post_s, post_e = parse_season_episode(title)
+        
+        # নাম ম্যাচিং স্কোরিং
+        is_title_match = False
+        if clean_q and (clean_q in title or title_clean in clean_q):
+            is_title_match = True
+        elif not clean_q: # শুধু পর্ব বা সিজন সার্চ করলে
+            is_title_match = True
+            
+        if is_title_match:
+            # যদি সিজন নির্দিষ্ট করা থাকে
+            if req_s is not None and post_s is not None and req_s != post_s:
+                continue
+            # যদি পর্ব নির্দিষ্ট করা থাকে
+            if req_e is not None and post_e is not None and req_e != post_e:
+                continue
+                
+            matched_posts.append(post)
+            
+    return matched_posts
 
 # =========================================================================
 # DATABASE INITIALIZATION
@@ -277,16 +329,6 @@ async def init_db() -> None:
             )
         """)
 
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS movie_requests (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                username TEXT,
-                request_text TEXT,
-                created_at INTEGER
-            )
-        """)
-
         await db.execute("CREATE TABLE IF NOT EXISTS post_files (id INTEGER PRIMARY KEY AUTOINCREMENT, post_code TEXT, file_id TEXT, file_type TEXT, file_name TEXT, order_idx INTEGER DEFAULT 0)")
         await db.execute("CREATE TABLE IF NOT EXISTS views (post_code TEXT, user_id INTEGER, created_at INTEGER, PRIMARY KEY (post_code, user_id))")
         await db.execute("CREATE TABLE IF NOT EXISTS ratings (post_code TEXT, user_id INTEGER, stars INTEGER, created_at INTEGER, PRIMARY KEY (post_code, user_id))")
@@ -296,7 +338,7 @@ async def init_db() -> None:
         for k, v in {"min_withdraw": str(DEFAULT_MIN_WITHDRAW), "view_reward": str(VIEW_REWARD), "referral_bonus": str(REFERRAL_BONUS), "daily_bonus": str(DAILY_BONUS)}.items():
             await db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, v))
         await db.commit()
-    logger.info("DB ready")
+    logger.info("DB initialized & ready.")
 
 async def fetchone(q: str, p: tuple = ()) -> Optional[dict]:
     async with aiosqlite.connect(DB_PATH) as db:
@@ -382,7 +424,7 @@ async def get_bot_username() -> str:
     return BOT_USERNAME_CACHE
 
 # =========================================================================
-# FORCE SUB & MIDDLEWARES (FORWARD PROTECTION)
+# FORCE SUB & MIDDLEWARES
 # =========================================================================
 async def is_member(channel: str, user_id: int) -> bool:
     try:
@@ -442,8 +484,7 @@ def main_menu_kb(is_admin: bool = False) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📤 UPLOAD CONTENT", callback_data="user_upload")],
         [InlineKeyboardButton(text="👤 MY PROFILE", callback_data="profile"), InlineKeyboardButton(text="🔗 REFER & EARN", callback_data="referral")],
         [InlineKeyboardButton(text="💰 MY BALANCE", callback_data="balance"), InlineKeyboardButton(text="💸 WITHDRAW", callback_data="withdraw")],
-        [InlineKeyboardButton(text="🎬 BROWSE", callback_data="browse"), InlineKeyboardButton(text="🔍 SEARCH & AI", callback_data="search_code")],
-        [InlineKeyboardButton(text="🎥 REQUEST MOVIE", callback_data="request_movie")],
+        [InlineKeyboardButton(text="🎬 BROWSE", callback_data="browse"), InlineKeyboardButton(text="🔍 AI SEARCH", callback_data="search_code")],
         [InlineKeyboardButton(text="📁 MY UPLOADS", callback_data="my_uploads"), InlineKeyboardButton(text="🏆 LEADERBOARD", callback_data="leaderboard")],
         [InlineKeyboardButton(text="🎁 DAILY BONUS", callback_data="daily_bonus"), InlineKeyboardButton(text="ℹ️ HELP", callback_data="help")],
     ]
@@ -454,14 +495,13 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📤 PUBLISH CONTENT", callback_data="admin_publish")],
         [InlineKeyboardButton(text="📁 MANAGE FOLDERS & SEASONS", callback_data="admin_manage_folders")],
-        [InlineKeyboardButton(text="🎥 MOVIE REQUESTS", callback_data="admin_movie_requests")],
         [InlineKeyboardButton(text="👑 MANAGE ADMINS", callback_data="admin_manage_admins")],
         [InlineKeyboardButton(text="📥 RESTORE BACKUP", callback_data="admin_restore")],
         [InlineKeyboardButton(text="⚙️ SETTINGS", callback_data="admin_settings")],
         [InlineKeyboardButton(text="🚫 BAN", callback_data="admin_ban"), InlineKeyboardButton(text="✅ UNBAN", callback_data="admin_unban")],
         [InlineKeyboardButton(text="💰 WITHDRAWALS", callback_data="admin_withdrawals"), InlineKeyboardButton(text="📊 STATS", callback_data="admin_stats")],
-        [InlineKeyboardButton(text="📄 ALL POSTS", callback_data="admin_posts"), InlineKeyboardButton(text="👥 ALL USERS", callback_data="admin_users")],
-        [InlineKeyboardButton(text="📢 BROADCAST", callback_data="admin_broadcast")],
+        [InlineKeyboardButton(text="📄 ALL POSTS (MOVE/COPY)", callback_data="admin_posts")],
+        [InlineKeyboardButton(text="👥 ALL USERS", callback_data="admin_users"), InlineKeyboardButton(text="📢 BROADCAST", callback_data="admin_broadcast")],
         [InlineKeyboardButton(text="🏠 MAIN MENU", callback_data="main")],
     ])
 
@@ -472,7 +512,7 @@ def back_kb(target: str = "main") -> InlineKeyboardMarkup:
 def post_card_kb(code: str) -> InlineKeyboardMarkup:
     mini_link = f"{MINI_APP_LINK_BASE}{code}"
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="▶️ WATCH & GET", url=mini_link)],
+        [InlineKeyboardButton(text="▶️ WATCH & UNLOCK", url=mini_link)],
         [InlineKeyboardButton(text="🔙 BACK", callback_data="main")],
     ])
 
@@ -483,7 +523,7 @@ def done_upload_kb(done_cb: str = "user_files_done") -> InlineKeyboardMarkup:
     ])
 
 # =========================================================================
-# COMMANDS
+# BOT COMMANDS REGISTRATION
 # =========================================================================
 async def register_commands():
     user_cmds = [
@@ -506,7 +546,7 @@ async def register_commands():
         logger.warning(f"commands: {e}")
 
 # =========================================================================
-# /start & FORWARDED FILE PROTECTION
+# START & FORWARD RESTRICTION
 # =========================================================================
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
@@ -553,16 +593,15 @@ async def cmd_start(message: Message, state: FSMContext):
         "🏠 <b>WELCOME TO MOVIEVERSE!</b>\n\n🎬 Watch content, earn rewards.\n💸 $0.0001 per view, $0.025 per referral.",
         reply_markup=main_menu_kb(is_adm))
 
-# ফরওয়ার্ড করা ফাইল হ্যান্ডলিং (নট এভেইলেবল বা বটে জয়েন করার মেসেজ ও লিংক জেনারেট)
 @router.message(F.forward_date)
 async def handle_forwarded_content(message: Message):
     username = await get_bot_username()
     text = (
         "🚫 <b>Not Available / Restricted!</b>\n\n"
-        "বট থেকে সরাসরি অন্য কোথাও ফাইল বা ভিডিও ফরওয়ার্ড করা যাবে না। "
-        "এই ফাইল বা ভিডিও দেখতে হলে আমাদের অফিশিয়াল বটে জয়েন করুন এবং লিংকে ক্লিক করুন[span_1](start_span)[span_1](end_span):\n\n"
-        f"🤖 Bot: @{username}\n"
-        f"🔗 স্টার্ট করতে এখানে ক্লিক করুন: https://t.me/{username}"
+        "বট থেকে অন্য কোনো চ্যানেলে বা ইউজারকে ভিডিও সরাসরি ফরওয়ার্ড করা যাবে না। "
+        "ভিডিও দেখতে আমাদের বটের লিংকে প্রবেশ করুন:\n\n"
+        f"🤖 Bot Username: @{username}\n"
+        f"🔗 স্টার্ট লিংক: https://t.me/{username}"
     )
     await message.answer(text, disable_web_page_preview=True)
 
@@ -586,10 +625,10 @@ async def cb_main(call: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "help")
 async def cb_help(call: CallbackQuery):
-    await safe_edit(call, "ℹ️ <b>HELP</b>\n\n🎬 <b>Browse:</b> Find content by category & season\n🔍 <b>Search & AI:</b> Smart AI search for series/movies\n🎥 <b>Request:</b> Send movie requests to Admin\n📤 <b>Upload:</b> Share privately with code\n💸 <b>Withdraw:</b> Min $10 via Binance/USDT", reply_markup=back_kb("main"))
+    await safe_edit(call, "ℹ️ <b>HELP & INFO</b>\n\n🎬 <b>Browse:</b> Find content by category & seasons\n🔍 <b>AI Search:</b> Smart search supporting multi-language queries\n📤 <b>Upload:</b> Upload & generate share links\n💸 <b>Withdraw:</b> Minimum $10 via Binance/USDT", reply_markup=back_kb("main"))
 
 # =========================================================================
-# PROFILE / BALANCE / REFERRAL / DAILY / LEADERBOARD
+# USER PROFILE & EARNINGS
 # =========================================================================
 @router.callback_query(F.data == "profile")
 async def cb_profile(call: CallbackQuery):
@@ -682,7 +721,7 @@ async def _show_referral(chat_id, user_id, edit_call=None):
             f"━━━━━━━━━━━━━━━━━━━━━━━\n📊 <b>YOUR STATS</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"👥 <b>Total Referrals:</b>  {refs}\n💰 <b>Earned:</b>  {fmt_money(earned)}\n\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━\n🔗 <b>YOUR LINK:</b>\n<code>{link}</code>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━\n\n🚀 <i>Start inviting now!</i>")
+            f"━━━━━━━━━━━━━━━━━━━━━━━")
     share = f"🎬 Join MovieVerse & earn!\n{link}"
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📤 SHARE INVITE LINK", url=f"https://t.me/share/url?url={link}&text={share}")],
@@ -726,7 +765,7 @@ async def cb_leaderboard(call: CallbackQuery):
     await safe_edit(call, text, reply_markup=back_kb("main"))
 
 # =========================================================================
-# BROWSE / CATEGORY / FOLDERS / SUBFOLDERS & NUMBERED PAGINATION
+# BROWSE & PAGINATION
 # =========================================================================
 @router.callback_query(F.data == "browse")
 async def cb_browse(call: CallbackQuery):
@@ -762,7 +801,7 @@ async def cb_browse_lang(call: CallbackQuery):
             kb.append([InlineKeyboardButton(text=f"📁 {f['name']}", callback_data=f"browsefolder:{cat}:{lang}:{f['id']}:1")])
         kb.append([InlineKeyboardButton(text="📄 All Direct Videos", callback_data=f"browsefolder:{cat}:{lang}:0:1")])
         kb.append([InlineKeyboardButton(text="🔙 BACK", callback_data=f"cat:{cat}")])
-        await safe_edit(call, f"{CATEGORY_NAMES[cat]} ({LANGUAGES[lang]}) — 📁 <b>Select Folder (Season):</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+        await safe_edit(call, f"{CATEGORY_NAMES[cat]} ({LANGUAGES[lang]}) — 📁 <b>Select Folder/Season:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
     else:
         await show_category_posts(call, cat=cat, lang=lang, folder_id=0, subfolder_id=0, page=1)
 
@@ -778,18 +817,13 @@ async def cb_browse_folder(call: CallbackQuery):
             kb.append([InlineKeyboardButton(text=f"📂 {sf['name']}", callback_data=f"browsesub:{cat}:{lang}:{folder_id}:{sf['id']}:1")])
         kb.append([InlineKeyboardButton(text="📄 Folder Main Videos", callback_data=f"browseviewposts:{cat}:{lang}:{folder_id}:0:1")])
         kb.append([InlineKeyboardButton(text="🔙 BACK", callback_data=f"browselang:{cat}:{lang}")])
-        await safe_edit(call, f"📁 <b>Select Sub-folder / Season Part:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+        await safe_edit(call, f"📁 <b>Select Sub-folder / Part:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
     else:
         await show_category_posts(call, cat=cat, lang=lang, folder_id=folder_id, subfolder_id=0, page=page)
 
 @router.callback_query(F.data.startswith("browsesub:"))
-async def cb_browse_subfolder(call: CallbackQuery):
-    parts = call.data.split(":")
-    cat, lang, folder_id, subfolder_id, page = parts[1], parts[2], int(parts[3]), int(parts[4]), int(parts[5])
-    await show_category_posts(call, cat=cat, lang=lang, folder_id=folder_id, subfolder_id=subfolder_id, page=page)
-
 @router.callback_query(F.data.startswith("browseviewposts:"))
-async def cb_browse_view_posts(call: CallbackQuery):
+async def cb_browse_subfolder(call: CallbackQuery):
     parts = call.data.split(":")
     cat, lang, folder_id, subfolder_id, page = parts[1], parts[2], int(parts[3]), int(parts[4]), int(parts[5])
     await show_category_posts(call, cat=cat, lang=lang, folder_id=folder_id, subfolder_id=subfolder_id, page=page)
@@ -827,14 +861,13 @@ async def show_category_posts(call: CallbackQuery, cat: str, lang: str, folder_i
     for p in page_posts:
         kb.append([InlineKeyboardButton(text=f"🎬 {truncate(p['title'], 25)} (👁 {p['views']})", callback_data=f"view:{p['code']}")])
 
-    # সংখ্যাভিত্তিক পেজিনেশন (আপনার ছবি ও রিকোয়ারমেন্ট অনুযায়ী ১, ২, ৩... বা সরাসরি পেজে যাওয়ার বাটন)
     num_row = []
     for p_num in range(1, total_pages + 1):
         if p_num == page:
             num_row.append(InlineKeyboardButton(text=f"[{p_num}]", callback_data="noop"))
         else:
             num_row.append(InlineKeyboardButton(text=str(p_num), callback_data=f"browsefolder:{cat}:{lang}:{folder_id}:{p_num}"))
-        if len(num_row) >= 6: # এক লাইনে বেশি বাটন না রাখার জন্য
+        if len(num_row) >= 5:
             break
     if num_row:
         kb.append(num_row)
@@ -859,12 +892,12 @@ async def cb_noop(call: CallbackQuery):
     await call.answer()
 
 # =========================================================================
-# SMART AI SEARCH & MOVIE REQUESTS
+# AI MULTI-LANGUAGE SEARCH HANDLER
 # =========================================================================
 @router.callback_query(F.data == "search_code")
 async def cb_search(call: CallbackQuery, state: FSMContext):
     await state.set_state(UserStates.waiting_search)
-    await safe_edit(call, "🔍 <b>AI SMART SEARCH</b>\n\nযেকোনো সিরিজ বা মুভির নাম লিখে পাঠান (বানান কিছুটা ভুল হলেও এআই খুঁজে দেবে):", reply_markup=back_kb("main"))
+    await safe_edit(call, "🔍 <b>AI SMART SEARCH</b>\n\nযেকোনো ভাষায় মুভি/সিরিজের নাম বা সিজন/পর্বের সংখ্যা লিখে পাঠান (যেমন: নারুতো ১০ পর্ব / Naruto S1 Ep10):", reply_markup=back_kb("main"))
 
 @router.message(UserStates.waiting_search)
 async def search_handler(message: Message, state: FSMContext):
@@ -874,68 +907,24 @@ async def search_handler(message: Message, state: FSMContext):
         await message.answer("সঠিক নাম লিখে পাঠান।", reply_markup=back_kb("main"))
         return
     
-    # এআই এনালাইসিস ও ফাজি সার্চ রান করা
-    matches = await ai_smart_search(q)
+    matches = await ai_multi_language_search(q)
     
     if not matches:
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🎥 মুভি রিকোয়েস্ট পাঠান", callback_data="request_movie")],
-            [InlineKeyboardButton(text="🏠 মূল মেনু", callback_data="main")]
-        ])
         await message.answer(
-            f"❌ <b>'{esc(q)}'</b> নামে বটের মধ্যে কোনো মুভি বা সিরিজ পাওয়া যায়নি!\n\n"
-            "আপনি চাইলে নিচে ক্লিক করে অ্যাডমিনের কাছে মুভি রিকোয়েস্ট পাঠাতে পারেন।",
-            reply_markup=kb
+            f"❌ <b>এই নামে আমাদের এখানে কোনো মুভি বা সিরিজ পাওয়া যায়নি।</b>",
+            reply_markup=back_kb("main")
         )
         return
 
-    # যদি হুবহু বা কাছাকাছি মিলে যায়
-    top_match = matches[0]
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ হ্যাঁ, এটাই খুঁজছি", callback_data=f"view:{top_match['code']}")],
-        [InlineKeyboardButton(text="❌ না, সঠিক নামটি দিন বা রিকোয়েস্ট করুন", callback_data="request_movie")],
-        [InlineKeyboardButton(text="🏠 মূল মেনু", callback_data="main")]
-    ])
-    
-    thumb = top_match.get("thumbnail_id")
-    caption = f"🤖 <b>AI Search Result:</b>\n\nআপনি কি এই সিরিজটি খুঁজছেন?\n🎬 <b>{esc(top_match['title'])}</b>"
-    
-    if thumb:
-        try:
-            await message.answer_photo(thumb, caption=caption, reply_markup=kb)
-            return
-        except: pass
-    await message.answer(caption, reply_markup=kb)
-
-# মুভি রিকোয়েস্ট ফিচার
-@router.callback_query(F.data == "request_movie")
-async def cb_request_movie(call: CallbackQuery, state: FSMContext):
-    await state.set_state(UserStates.waiting_movie_request)
-    await safe_edit(call, "🎥 <b>MOVIE REQUEST</b>\n\nযে মুভি বা অ্যানিমে সিরিজটি আপনি চান, সেটির সঠিক নাম লিখে পাঠান:", reply_markup=back_kb("main"))
-
-@router.message(UserStates.waiting_movie_request)
-async def recv_movie_request(message: Message, state: FSMContext):
-    req_text = (message.text or "").strip()
-    await state.clear()
-    if not req_text:
-        await message.answer("সঠিক নাম লিখুন।", reply_markup=back_kb("main"))
-        return
-    
-    await execute(
-        "INSERT INTO movie_requests (user_id, username, request_text, created_at) VALUES (?, ?, ?, ?)",
-        (message.from_user.id, message.from_user.username or "NoUsername", req_text, int(time.time()))
-    )
-    await message.answer("✅ আপনার রিকোয়েস্টটি অ্যাডমিনের কাছে সফলভাবে পাঠানো হয়েছে! খুব শীঘ্রই বটে আপলোড করা হবে।", reply_markup=back_kb("main"))
-    
-    try:
-        await bot.send_message(
-            ADMIN_CHAT_ID,
-            f"🎥 <b>NEW MOVIE REQUEST!</b>\n\n👤 From: <a href='tg://user?id={message.from_user.id}'>{esc(message.from_user.first_name)}</a> (<code>{message.from_user.id}</code>)\n📝 Requested: <b>{esc(req_text)}</b>",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 রিফ্লাই মেসেজ পাঠান", callback_data=f"adm_reply_req:{message.from_user.id}")]]))
-    except: pass
+    text = f"🔍 <b>AI SEARCH RESULTS FOR:</b> <i>{esc(q)}</i>\n\n"
+    kb = []
+    for p in matches[:15]:
+        kb.append([InlineKeyboardButton(text=f"🎬 {truncate(p['title'], 35)}", callback_data=f"view:{p['code']}")])
+    kb.append([InlineKeyboardButton(text="🏠 MAIN MENU", callback_data="main")])
+    await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
 # =========================================================================
-# POST CARD & DELIVERY
+# POST CARD & FILE DELIVERY
 # =========================================================================
 async def show_post_card(chat_id: int, code: str):
     post = await get_post(code)
@@ -1043,7 +1032,7 @@ async def _auto_delete(chat_id: int, mid: int):
     except: pass
 
 # =========================================================================
-# USER UPLOAD & MY UPLOADS
+# USER UPLOADS
 # =========================================================================
 @router.callback_query(F.data == "user_upload")
 async def cb_upload(call: CallbackQuery, state: FSMContext):
@@ -1204,7 +1193,7 @@ async def wd_address(message: Message, state: FSMContext):
     except: pass
 
 # =========================================================================
-# ADMIN PANEL, FOLDER/SEASON DELETE CONFIRMATION & ADVANCED CONTROLS
+# ADMIN PANEL, FOLDER/FILE MOVE & COPY, DB RESTORE
 # =========================================================================
 @router.message(Command("admin"))
 async def cmd_admin(message: Message):
@@ -1218,7 +1207,106 @@ async def cb_admin_panel(call: CallbackQuery):
         return
     await safe_edit(call, "⚙️ <b>ADMIN PANEL</b>", reply_markup=admin_menu_kb())
 
-# ফোল্ডার ম্যানেজমেন্ট ও ডিলিট করার সময় ইয়েস/নো কনফার্মেশন ফিচার
+# -------------------------------------------------------------------------
+# FILE MOVE & COPY FEATURE (এক ফোল্ডার থেকে অন্য ফোল্ডারে মুভ বা কপি)
+# -------------------------------------------------------------------------
+@router.callback_query(F.data == "admin_posts")
+async def cb_all_posts(call: CallbackQuery):
+    if not await is_admin_user(call.from_user.id):
+        return
+    rows = await fetchall("SELECT * FROM posts WHERE deleted=0 ORDER BY created_at DESC LIMIT 30")
+    if not rows:
+        await call.answer("No posts.", show_alert=True)
+        return
+    kb = []
+    for p in rows:
+        kb.append([InlineKeyboardButton(text=f"📦 Select: {truncate(p['title'], 25)}", callback_data=f"adm_postopt:{p['code']}")])
+    kb.append([InlineKeyboardButton(text="🔙 BACK", callback_data="admin_panel")])
+    await safe_edit(call, "📄 <b>ALL POSTS MANAGEMENT</b>\n\nক্লিক করে ভিডিও **Move (স্থানান্তর)** বা **Copy (কপি)** করুন:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+@router.callback_query(F.data.startswith("adm_postopt:"))
+async def cb_adm_post_options(call: CallbackQuery):
+    code = call.data.split(":", 1)[1]
+    post = await get_post(code)
+    if not post:
+        await call.answer("Post not found.", show_alert=True)
+        return
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚚 MOVE To Another Folder", callback_data=f"adm_move_start:{code}")],
+        [InlineKeyboardButton(text="📋 COPY To Another Folder", callback_data=f"adm_copy_start:{code}")],
+        [InlineKeyboardButton(text="🗑 Delete Post", callback_data=f"adm_delpost:{code}")],
+        [InlineKeyboardButton(text="🔙 BACK", callback_data="admin_posts")]
+    ])
+    await safe_edit(call, f"⚙️ <b>Post Selected:</b> <i>{esc(post['title'])}</i>\n\nকী করতে চান সিলেক্ট করুন:", reply_markup=kb)
+
+@router.callback_query(F.data.startswith("adm_delpost:"))
+async def cb_adm_delpost(call: CallbackQuery):
+    code = call.data.split(":", 1)[1]
+    await execute("UPDATE posts SET deleted=1 WHERE code=?", (code,))
+    await call.answer("🗑 Post deleted.", show_alert=True)
+    await cb_all_posts(call)
+
+# MOVE ACTION
+@router.callback_query(F.data.startswith("adm_move_start:"))
+async def cb_adm_move_start(call: CallbackQuery):
+    code = call.data.split(":", 1)[1]
+    post = await get_post(code)
+    folders = await fetchall("SELECT * FROM admin_folders WHERE category=? AND language=?", (post["category"], post["language"]))
+    
+    kb = []
+    for f in folders:
+        marker = " 📍(Current)" if f["id"] == post["folder_id"] else ""
+        kb.append([InlineKeyboardButton(text=f"📁 {f['name']}{marker}", callback_data=f"adm_move_do:{code}:{f['id']}")])
+    kb.append([InlineKeyboardButton(text="📂 No Folder (Direct)", callback_data=f"adm_move_do:{code}:0")])
+    kb.append([InlineKeyboardButton(text="🔙 BACK", callback_data=f"adm_postopt:{code}")])
+    
+    await safe_edit(call, f"🚚 <b>MOVE FILE:</b> <i>{esc(post['title'])}</i>\n\nকোন ফোল্ডারে স্থানান্তর করবেন সিলেক্ট করুন:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+@router.callback_query(F.data.startswith("adm_move_do:"))
+async def cb_adm_move_do(call: CallbackQuery):
+    parts = call.data.split(":")
+    code, target_fid = parts[1], int(parts[2])
+    await execute("UPDATE posts SET folder_id=? WHERE code=?", (target_fid, code))
+    await call.answer("✅ সফলভাবে মুভ (Move) করা হয়েছে!", show_alert=True)
+    await cb_all_posts(call)
+
+# COPY ACTION
+@router.callback_query(F.data.startswith("adm_copy_start:"))
+async def cb_adm_copy_start(call: CallbackQuery):
+    code = call.data.split(":", 1)[1]
+    post = await get_post(code)
+    folders = await fetchall("SELECT * FROM admin_folders WHERE category=? AND language=?", (post["category"], post["language"]))
+    
+    kb = []
+    for f in folders:
+        kb.append([InlineKeyboardButton(text=f"📁 Copy to {f['name']}", callback_data=f"adm_copy_do:{code}:{f['id']}")])
+    kb.append([InlineKeyboardButton(text="🔙 BACK", callback_data=f"adm_postopt:{code}")])
+    
+    await safe_edit(call, f"📋 <b>COPY FILE:</b> <i>{esc(post['title'])}</i>\n\nকোন ফোল্ডারে কপি করে বসাবেন সিলেক্ট করুন:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+@router.callback_query(F.data.startswith("adm_copy_do:"))
+async def cb_adm_copy_do(call: CallbackQuery):
+    parts = call.data.split(":")
+    code, target_fid = parts[1], int(parts[2])
+    
+    orig = await get_post(code)
+    orig_files = await get_post_files(code)
+    
+    new_code = await unique_code()
+    new_title = f"{orig['title']} (Copy)"
+    
+    await execute("INSERT INTO posts (code, title, category, language, owner_id, is_admin, thumbnail_id, created_at, published, folder_id, subfolder_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)", (new_code, new_title, orig["category"], orig["language"], orig["owner_id"], orig["is_admin"], orig["thumbnail_id"], int(time.time()), target_fid, orig["subfolder_id"]))
+    
+    for f in orig_files:
+        await execute("INSERT INTO post_files (post_code, file_id, file_type, file_name, order_idx) VALUES (?, ?, ?, ?, ?)", (new_code, f["file_id"], f["file_type"], f["file_name"], f["order_idx"]))
+        
+    await call.answer("✅ সফলভাবে কপি (Copy) করা হয়েছে!", show_alert=True)
+    await cb_all_posts(call)
+
+# -------------------------------------------------------------------------
+# FOLDER DELETE CONFIRMATION (YES / NO)
+# -------------------------------------------------------------------------
 @router.callback_query(F.data == "admin_manage_folders")
 async def cb_manage_folders(call: CallbackQuery):
     if not await is_admin_user(call.from_user.id):
@@ -1247,13 +1335,12 @@ async def cb_admfoldlang(call: CallbackQuery):
     kb = []
     if folders:
         for f in folders:
-            kb.append([InlineKeyboardButton(text=f"📁 {f['name']} (Delete)", callback_data=f"admdelefold_confirm:{f['id']}")])
+            kb.append([InlineKeyboardButton(text=f"📁 Delete: {f['name']}", callback_data=f"admdelefold_confirm:{f['id']}")])
     else:
         kb.append([InlineKeyboardButton(text="⚠️ No folders found", callback_data="noop")])
     kb.append([InlineKeyboardButton(text="🔙 BACK", callback_data=f"admfoldcat:{cat}")])
     await safe_edit(call, f"📁 <b>Delete Folders ({CATEGORY_NAMES[cat]} - {LANGUAGES[lang]}):</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
-# ফোল্ডার ডিলিটের কনফার্মেশন (Yes / No)
 @router.callback_query(F.data.startswith("admdelefold_confirm:"))
 async def cb_adm_delete_folder_confirm(call: CallbackQuery):
     folder_id = int(call.data.split(":", 1)[1])
@@ -1266,7 +1353,7 @@ async def cb_adm_delete_folder_confirm(call: CallbackQuery):
         [InlineKeyboardButton(text="✅ হ্যাঁ (Yes, Delete)", callback_data=f"admdelefold_yes:{folder_id}")],
         [InlineKeyboardButton(text="❌ না (No, Cancel)", callback_data="admin_manage_folders")]
     ])
-    await safe_edit(call, f"⚠️ আপনি কি নিশ্চিতভাবে <b>'{folder['name']}'</b> ফোল্ডারটি ডিলিট করতে চান?", reply_markup=kb)
+    await safe_edit(call, f"⚠️ আপনি কি ফোল্ডার <b>'{folder['name']}'</b> ডিলিট করতে চান?", reply_markup=kb)
 
 @router.callback_query(F.data.startswith("admdelefold_yes:"))
 async def cb_adm_delete_folder_yes(call: CallbackQuery):
@@ -1277,37 +1364,74 @@ async def cb_adm_delete_folder_yes(call: CallbackQuery):
     await call.answer("✅ ফোল্ডার সফলভাবে ডিলিট করা হয়েছে!", show_alert=True)
     await cb_manage_folders(call)
 
-# মুভি রিকোয়েস্ট দেখার ও ম্যানেজ করার ফিচার
-@router.callback_query(F.data == "admin_movie_requests")
-async def cb_admin_movie_requests(call: CallbackQuery):
+# -------------------------------------------------------------------------
+# DATABASE BACKUP & RESTORE HANDLERS
+# -------------------------------------------------------------------------
+@router.message(Command("backup"))
+async def cmd_backup(message: Message):
+    if not await is_admin_user(message.from_user.id):
+        return
+    try:
+        async with aiosqlite.connect(DB_PATH) as d:
+            await d.execute("PRAGMA wal_checkpoint(FULL)")
+            await d.commit()
+        await bot.send_document(ADMIN_CHAT_ID, FSInputFile(DB_PATH), caption=f"📥 Manual Database Backup\n🕒 {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())}")
+    except Exception as e:
+        await message.answer(f"❌ Backup failed: {e}")
+
+@router.callback_query(F.data == "admin_restore")
+async def cb_restore(call: CallbackQuery, state: FSMContext):
     if not await is_admin_user(call.from_user.id):
         return
-    reqs = await fetchall("SELECT * FROM movie_requests ORDER BY id DESC LIMIT 20")
-    if not reqs:
-        await safe_edit(call, "🎥 <b>MOVIE REQUESTS</b>\n\nকোনো রিকোয়েস্ট নেই।", reply_markup=back_kb("admin_panel"))
-        return
-    
-    text = "🎥 <b>USER MOVIE REQUESTS:</b>\n\n"
-    kb = []
-    for r in reqs:
-        text += f"👤 <a href='tg://user?id={r['user_id']}'>{r['username']}</a>: <b>{esc(r['request_text'])}</b>\n"
-        kb.append([InlineKeyboardButton(text=f"✉️ ম্যাসেজ পাঠান ({r['username']})", callback_data=f"adm_reply_req:{r['user_id']}")])
-    kb.append([InlineKeyboardButton(text="🔙 ব্যাক", callback_data="admin_panel")])
-    await safe_edit(call, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    await state.set_state(AdminStates.waiting_restore_db)
+    await safe_edit(call, "📥 <b>RESTORE DATABASE BACKUP</b>\n\n⚠️ আপলোড করলে বর্তমান ডাটাবেজ আপডেট হবে।\n\nআপনার ব্যাকআপ করা <code>.db</code> ফাইলটি এখন সেন্ড করুন:", reply_markup=back_kb("admin_panel"))
 
-# চ্যাট আইডি দিয়ে নতুন অ্যাডমিন যুক্ত করা
+@router.message(AdminStates.waiting_restore_db, F.document)
+async def restore_handler(message: Message, state: FSMContext):
+    if not await is_admin_user(message.from_user.id):
+        return
+    doc = message.document
+    if not doc.file_name or not doc.file_name.lower().endswith(".db"):
+        await message.answer("একটি সঠিক .db ব্যাকআপ ফাইল দিন।")
+        return
+    await message.answer("⏳ Processing & Restoring Database...")
+    tmp = f"restore_{int(time.time())}.db"
+    try:
+        f = await bot.get_file(doc.file_id)
+        await bot.download_file(f.file_path, tmp)
+        async with aiosqlite.connect(tmp) as t:
+            await t.execute("SELECT 1 FROM sqlite_master LIMIT 1")
+        for s in ("-wal", "-shm"):
+            p = DB_PATH + s
+            if os.path.exists(p):
+                try: os.remove(p)
+                except: pass
+        shutil.copy(tmp, DB_PATH)
+        os.remove(tmp)
+        await init_db()
+        await state.clear()
+        await message.answer("✅ <b>DATABASE RESTORED SUCCESSFULLY!</b>\n\nসকল ডেটা সফলভাবে রিস্টোর হয়েছে।", reply_markup=back_kb("admin_panel"))
+    except Exception as e:
+        if os.path.exists(tmp):
+            try: os.remove(tmp)
+            except: pass
+        await message.answer(f"❌ Restore Failed: {e}")
+
+# -------------------------------------------------------------------------
+# ADMIN MANAGING & BROADCAST
+# -------------------------------------------------------------------------
 @router.callback_query(F.data == "admin_manage_admins")
-async def cb_manage_admins(call: CallbackQuery, state: FSMContext):
+async def cb_manage_admins(call: CallbackQuery):
     if not await is_admin_user(call.from_user.id):
         return
     admins = await fetchall("SELECT * FROM admins")
-    text = "👑 <b>CURRENT ADMINS:</b>\n\n"
+    text = "👑 <b>CURRENT BOT ADMINS:</b>\n\n"
     for a in admins:
-        text += f"🔹 Chat ID: <code>{a['user_id']}</code>\n"
+        text += f"🔹 Admin Chat ID: <code>{a['user_id']}</code>\n"
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ নতুন অ্যাডমিন যোগ করুন", callback_data="adm_add_admin")],
-        [InlineKeyboardButton(text="🔙 ব্যাক", callback_data="admin_panel")]
+        [InlineKeyboardButton(text="➕ Add New Admin", callback_data="adm_add_admin")],
+        [InlineKeyboardButton(text="🔙 BACK", callback_data="admin_panel")]
     ])
     await safe_edit(call, text, reply_markup=kb)
 
@@ -1318,50 +1442,48 @@ async def cb_add_admin_prompt(call: CallbackQuery, state: FSMContext):
 
 @router.message(AdminStates.waiting_admin_add)
 async def recv_new_admin_id(message: Message, state: FSMContext):
+    if not await is_admin_user(message.from_user.id):
+        return
     try: new_aid = int((message.text or "").strip())
     except ValueError:
         await message.answer("সঠিক চ্যাট আইডি দিন।")
         return
     await execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (new_aid,))
     await state.clear()
-    await message.answer(f"✅ চ্যাট আইডি <code>{new_aid}</code> সফলভাবে অ্যাডমিন হিসেবে যুক্ত হয়েছে!", reply_markup=back_kb("admin_panel"))
+    await message.answer(f"✅ <code>{new_aid}</code> আইডি সফলভাবে অ্যাডমিন হিসেবে যুক্ত করা হয়েছে!", reply_markup=back_kb("admin_panel"))
 
-# ব্যাকআপ ও অন্যান্য অ্যাডমিন হ্যান্ডলার
-@router.message(Command("backup"))
-async def cmd_backup(message: Message):
-    if not await is_admin_user(message.from_user.id):
-        return
-    try:
-        async with aiosqlite.connect(DB_PATH) as d:
-            await d.execute("PRAGMA wal_checkpoint(FULL)")
-            await d.commit()
-        await bot.send_document(ADMIN_CHAT_ID, FSInputFile(DB_PATH), caption=f"📥 Manual Backup\n🕒 {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())}")
-    except Exception as e:
-        await message.answer(f"❌ Failed: {e}")
-
-@router.message(Command("stats"))
-async def cmd_stats(message: Message):
-    if not await is_admin_user(message.from_user.id):
-        return
-    await _show_stats(message.chat.id)
-
-@router.callback_query(F.data == "admin_stats")
-async def cb_stats(call: CallbackQuery):
+@router.callback_query(F.data == "admin_broadcast")
+async def cb_broadcast(call: CallbackQuery, state: FSMContext):
     if not await is_admin_user(call.from_user.id):
         return
-    await _show_stats(call.message.chat.id, edit_call=call)
+    await state.set_state(AdminStates.waiting_broadcast)
+    await safe_edit(call, "📢 <b>BROADCAST MESSAGE</b>\n\nইউজারদের পাঠানোর জন্য মেসেজটি এখানে লিখুন বা ফরওয়ার্ড করুন:", reply_markup=back_kb("admin_panel"))
 
-async def _show_stats(chat_id, edit_call=None):
-    u = await fetchone("SELECT COUNT(*) as c FROM users")
-    p = await fetchone("SELECT COUNT(*) as c FROM posts WHERE published=1 AND deleted=0")
-    v = await fetchone("SELECT COUNT(*) as c FROM views")
-    b = await fetchone("SELECT COALESCE(SUM(balance),0) as s FROM users")
-    text = f"📊 <b>STATISTICS</b>\n\n👥 Users: <b>{u['c'] if u else 0}</b>\n📄 Posts: <b>{p['c'] if p else 0}</b>\n👁 Views: <b>{v['c'] if v else 0}</b>\n💰 Balance: <b>{fmt_money(b['s'] if b else 0)}</b>"
-    kb = back_kb("admin_panel")
-    if edit_call: await safe_edit(edit_call, text, reply_markup=kb)
-    else: await bot.send_message(chat_id, text, reply_markup=kb)
+@router.message(AdminStates.waiting_broadcast)
+async def recv_broadcast(message: Message, state: FSMContext):
+    if not await is_admin_user(message.from_user.id):
+        return
+    users = await fetchall("SELECT user_id FROM users WHERE banned=0")
+    await state.clear()
+    await message.answer(f"📤 Broadcasting to {len(users)} users...")
+    ok = fail = 0
+    for u in users:
+        try:
+            await message.copy_to(u["user_id"])
+            ok += 1
+            await asyncio.sleep(0.04)
+        except TelegramRetryAfter as e:
+            await asyncio.sleep(e.retry_after + 1)
+            try:
+                await message.copy_to(u["user_id"])
+                ok += 1
+            except: fail += 1
+        except: fail += 1
+    await message.answer(f"✅ Broadcast Complete!\nSuccess: {ok} | Failed: {fail}", reply_markup=back_kb("admin_panel"))
 
-# কন্টেন্ট পাবলিশিং উইথ নেস্টেড ফোল্ডার (Season 1, Season 2 ইত্যাদি)
+# -------------------------------------------------------------------------
+# PUBLISHING CONTENT BY ADMIN
+# -------------------------------------------------------------------------
 @router.callback_query(F.data == "admin_publish")
 async def cb_publish(call: CallbackQuery, state: FSMContext):
     if not await is_admin_user(call.from_user.id):
@@ -1444,7 +1566,7 @@ async def admin_recv_thumb(message: Message, state: FSMContext):
         kb = []
         for lang_code, lang_name in LANGUAGES.items():
             kb.append([InlineKeyboardButton(text=lang_name, callback_data=f"setpublang:{lang_code}")])
-        await message.answer("🌐 Select Language for this content:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+        await message.answer("🌐 Select Language:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
     else:
         await show_confirm_preview(message, state)
 
@@ -1459,14 +1581,14 @@ async def cb_set_pub_lang(call: CallbackQuery, state: FSMContext):
     buttons = []
     for f in folders:
         buttons.append([InlineKeyboardButton(text=f"📁 {f['name']}", callback_data=f"admin_select_folder:{f['id']}")])
-    buttons.append([InlineKeyboardButton(text="➕ ফোল্ডার তৈরি করুন", callback_data="admin_create_folder")])
-    buttons.append([InlineKeyboardButton(text="➡️ সরাসরি আপলোড", callback_data="admin_select_folder:0")])
+    buttons.append([InlineKeyboardButton(text="➕ Create Folder", callback_data="admin_create_folder")])
+    buttons.append([InlineKeyboardButton(text="➡️ Direct Upload", callback_data="admin_select_folder:0")])
     await safe_edit(call, "ফোল্ডার সিলেক্ট করুন:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 @router.callback_query(F.data == "admin_create_folder")
 async def process_admin_create_folder(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AdminStates.waiting_folder_name)
-    await callback.message.edit_text("✏️ নতুন ফোল্ডারের নাম (যেমন: Season 1) লিখে পাঠান:")
+    await callback.message.edit_text("✏️ ফোল্ডারের নাম (যেমন: Season 1) লিখে পাঠান:")
     await callback.answer()
 
 @router.message(AdminStates.waiting_folder_name)
@@ -1478,17 +1600,16 @@ async def save_admin_folder_name(message: Message, state: FSMContext):
     folder_id = await execute("INSERT INTO admin_folders (admin_id, category, language, name) VALUES (?, ?, ?, ?)", (ADMIN_CHAT_ID, data.get("category"), data.get("language"), folder_name))
     await state.update_data(folder_id=folder_id)
     
-    # সাব-ফোল্ডার বা সিজন ফোল্ডারের ভেতর ফোল্ডার তৈরির অপশন
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ এর ভেতরে আরেকটি সাব-ফোল্ডার (Season 2 ইত্যাদি) তৈরি করুন", callback_data="admin_create_subfolder")],
-        [InlineKeyboardButton(text="✅ এই ফোল্ডারেই রাখুন", callback_data="admin_proceed_preview")]
+        [InlineKeyboardButton(text="➕ সাব-ফোল্ডার (Season Part/Episodes) তৈরি করুন", callback_data="admin_create_subfolder")],
+        [InlineKeyboardButton(text="✅ এই ফোল্ডারেই আপলোড সম্পন্ন করুন", callback_data="admin_proceed_preview")]
     ])
-    await message.answer(f"✅ <b>'{folder_name}'</b> ফোল্ডার তৈরি হয়েছে। আরও ফোল্ডার যোগ করতে চান?", reply_markup=kb)
+    await message.answer(f"✅ ফোল্ডার <b>'{folder_name}'</b> যুক্ত হয়েছে।", reply_markup=kb)
 
 @router.callback_query(F.data == "admin_create_subfolder")
 async def cb_create_subfolder(call: CallbackQuery, state: FSMContext):
     await state.set_state(AdminStates.waiting_subfolder_name)
-    await safe_edit(call, "✏️ সাব-ফোল্ডারের নাম (যেমন: Episode Part 1) লিখে পাঠান:")
+    await safe_edit(call, "✏️ সাব-ফোল্ডারের নাম লিখে পাঠান:")
 
 @router.message(AdminStates.waiting_subfolder_name)
 async def save_subfolder_name(message: Message, state: FSMContext):
@@ -1502,13 +1623,11 @@ async def save_subfolder_name(message: Message, state: FSMContext):
     await show_confirm_preview(message, state)
 
 @router.callback_query(F.data == "admin_proceed_preview")
-async def cb_proceed_preview(call: CallbackQuery, state: FSMContext):
-    await show_confirm_preview(call.message, state, is_callback=True)
-
 @router.callback_query(F.data.startswith("admin_select_folder:"))
 async def process_admin_folder_selection(callback: CallbackQuery, state: FSMContext):
-    folder_id = int(callback.data.split(":")[1])
-    await state.update_data(folder_id=folder_id)
+    if callback.data.startswith("admin_select_folder:"):
+        folder_id = int(callback.data.split(":")[1])
+        await state.update_data(folder_id=folder_id)
     await callback.answer()
     await show_confirm_preview(callback.message, state, is_callback=True)
 
@@ -1568,50 +1687,172 @@ async def cb_pub_confirm(call: CallbackQuery, state: FSMContext):
     await state.clear()
     await safe_edit(call, f"✅ <b>PUBLISHED!</b>\n\n🔗 Link: <code>{link}</code>", reply_markup=back_kb("admin_panel"))
 
-# ব্রডকাস্ট সিস্টেম
-@router.callback_query(F.data == "admin_broadcast")
-async def cb_broadcast(call: CallbackQuery, state: FSMContext):
-    if not await is_admin_user(call.from_user.id):
-        return
-    await state.set_state(AdminStates.waiting_broadcast)
-    await safe_edit(call, "📢 <b>BROADCAST</b>\n\nসকল ইউজারের কাছে পাঠানোর জন্য মেসেজটি পাঠান:", reply_markup=back_kb("admin_panel"))
+# -------------------------------------------------------------------------
+# ADMIN BAN / UNBAN / USERS / SETTINGS / STATS
+# -------------------------------------------------------------------------
+@router.callback_query(F.data == "admin_ban")
+async def cb_ban(call: CallbackQuery, state: FSMContext):
+    await state.set_state(AdminStates.waiting_ban_id)
+    await safe_edit(call, "🚫 Send <b>User ID</b> to ban:", reply_markup=back_kb("admin_panel"))
 
-@router.message(AdminStates.waiting_broadcast)
-async def recv_broadcast(message: Message, state: FSMContext):
-    if not await is_admin_user(message.from_user.id):
+@router.message(AdminStates.waiting_ban_id)
+async def recv_ban(message: Message, state: FSMContext):
+    try: uid = int((message.text or "").strip())
+    except ValueError:
+        await message.answer("Send a valid ID.")
         return
-    users = await fetchall("SELECT user_id FROM users WHERE banned=0")
+    await execute("UPDATE users SET banned=1 WHERE user_id=?", (uid,))
     await state.clear()
-    await message.answer(f"📤 Broadcasting to {len(users)} users...")
-    ok = fail = 0
-    for u in users:
-        try:
-            await message.copy_to(u["user_id"])
-            ok += 1
-            await asyncio.sleep(0.05)
-        except TelegramRetryAfter as e:
-            await asyncio.sleep(e.retry_after + 1)
-            try:
-                await message.copy_to(u["user_id"])
-                ok += 1
-            except: fail += 1
-        except: fail += 1
-    await message.answer(f"✅ Done!\nSuccess: {ok} | Failed: {fail}", reply_markup=back_kb("admin_panel"))
+    await message.answer(f"✅ User <code>{uid}</code> banned.", reply_markup=back_kb("admin_panel"))
 
-# ব্যাকআপ ওয়ার্কার ও ওয়েব সার্ভার
+@router.callback_query(F.data == "admin_unban")
+async def cb_unban(call: CallbackQuery, state: FSMContext):
+    await state.set_state(AdminStates.waiting_unban_id)
+    await safe_edit(call, "✅ Send <b>User ID</b> to unban:", reply_markup=back_kb("admin_panel"))
+
+@router.message(AdminStates.waiting_unban_id)
+async def recv_unban(message: Message, state: FSMContext):
+    try: uid = int((message.text or "").strip())
+    except ValueError:
+        await message.answer("Send a valid ID.")
+        return
+    await execute("UPDATE users SET banned=0 WHERE user_id=?", (uid,))
+    await state.clear()
+    await message.answer(f"✅ User <code>{uid}</code> unbanned.", reply_markup=back_kb("admin_panel"))
+
+@router.callback_query(F.data == "admin_withdrawals")
+async def cb_withdrawals(call: CallbackQuery):
+    rows = await fetchall("SELECT * FROM withdrawals WHERE status='pending' ORDER BY id DESC LIMIT 20")
+    if not rows:
+        await safe_edit(call, "💰 <b>WITHDRAWALS</b>\n\nNo pending withdrawals.", reply_markup=back_kb("admin_panel"))
+        return
+    text = "💰 <b>PENDING WITHDRAWALS</b>\n\n"
+    for r in rows[:10]:
+        text += f"#{r['id']} | <code>{r['user_id']}</code> | {fmt_money(r['amount'])} | {esc(r['method'])}\n"
+    await safe_edit(call, text, reply_markup=back_kb("admin_panel"))
+
+@router.callback_query(F.data.startswith("wdapprove:"))
+async def cb_wd_approve(call: CallbackQuery):
+    wid = int(call.data.split(":", 1)[1])
+    wd = await fetchone("SELECT * FROM withdrawals WHERE id=?", (wid,))
+    if not wd or wd["status"] != "pending":
+        await call.answer("Already processed.", show_alert=True)
+        return
+    await execute("UPDATE withdrawals SET status='approved' WHERE id=?", (wid,))
+    try: await bot.send_message(wd["user_id"], f"✅ Withdrawal #{wid} approved!")
+    except: pass
+    await safe_edit(call, f"✅ Approved #{wid}", reply_markup=back_kb("admin_panel"))
+
+@router.callback_query(F.data.startswith("wdreject:"))
+async def cb_wd_reject(call: CallbackQuery):
+    wid = int(call.data.split(":", 1)[1])
+    wd = await fetchone("SELECT * FROM withdrawals WHERE id=?", (wid,))
+    if not wd or wd["status"] != "pending":
+        await call.answer("Already processed.", show_alert=True)
+        return
+    await execute("UPDATE withdrawals SET status='rejected' WHERE id=?", (wid,))
+    await add_balance(wd["user_id"], wd["amount"])
+    try: await bot.send_message(wd["user_id"], f"❌ Withdrawal #{wid} rejected.")
+    except: pass
+    await safe_edit(call, f"❌ Rejected #{wid}", reply_markup=back_kb("admin_panel"))
+
+@router.callback_query(F.data == "admin_users")
+async def cb_all_users(call: CallbackQuery):
+    rows = await fetchall("SELECT * FROM users ORDER BY joined_at DESC LIMIT 30")
+    text = "👥 <b>ALL USERS (30)</b>\n\n"
+    for u in rows:
+        ban = "🚫" if u.get("banned") else "✅"
+        text += f"{ban} <code>{u['user_id']}</code> | {esc(truncate(u.get('first_name') or 'User', 20))} | {fmt_money(u.get('balance', 0))}\n"
+    await safe_edit(call, text, reply_markup=back_kb("admin_panel"))
+
+@router.callback_query(F.data == "admin_stats")
+async def cb_stats(call: CallbackQuery):
+    u = await fetchone("SELECT COUNT(*) as c FROM users")
+    p = await fetchone("SELECT COUNT(*) as c FROM posts WHERE published=1 AND deleted=0")
+    v = await fetchone("SELECT COUNT(*) as c FROM views")
+    b = await fetchone("SELECT COALESCE(SUM(balance),0) as s FROM users")
+    text = f"📊 <b>BOT STATISTICS</b>\n\n👥 Users: <b>{u['c']}</b>\n📄 Posts: <b>{p['c']}</b>\n👁 Views: <b>{v['c']}</b>\n💰 Total Balances: <b>{fmt_money(b['s'])}</b>"
+    await safe_edit(call, text, reply_markup=back_kb("admin_panel"))
+
+@router.callback_query(F.data == "admin_settings")
+async def cb_settings(call: CallbackQuery):
+    min_w = await get_setting("min_withdraw", str(DEFAULT_MIN_WITHDRAW))
+    vr = await get_setting("view_reward", str(VIEW_REWARD))
+    rb = await get_setting("referral_bonus", str(REFERRAL_BONUS))
+    daily = await get_setting("daily_bonus", str(DAILY_BONUS))
+    text = f"⚙️ <b>SETTINGS</b>\n\n💵 Min Withdraw: <b>${min_w}</b>\n👁 View Reward: <b>${vr}</b>\n🔗 Referral: <b>${rb}</b>\n🎁 Daily: <b>${daily}</b>"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💵 MIN WITHDRAW", callback_data="set:min_withdraw")],
+        [InlineKeyboardButton(text="👁 VIEW REWARD", callback_data="set:view_reward")],
+        [InlineKeyboardButton(text="🔗 REFERRAL BONUS", callback_data="set:referral_bonus")],
+        [InlineKeyboardButton(text="🎁 DAILY BONUS", callback_data="set:daily_bonus")],
+        [InlineKeyboardButton(text="🔙 BACK", callback_data="admin_panel")],
+    ])
+    await safe_edit(call, text, reply_markup=kb)
+
+@router.callback_query(F.data.startswith("set:"))
+async def cb_set_value(call: CallbackQuery, state: FSMContext):
+    key = call.data.split(":", 1)[1]
+    await state.update_data(setting_key=key)
+    await state.set_state(AdminStates.waiting_setting)
+    await safe_edit(call, f"Send new numeric value for <b>{key}</b>:", reply_markup=back_kb("admin_settings"))
+
+@router.message(AdminStates.waiting_setting)
+async def recv_setting(message: Message, state: FSMContext):
+    try: val = float((message.text or "").strip())
+    except ValueError:
+        await message.answer("Send a valid number.")
+        return
+    key = (await state.get_data()).get("setting_key")
+    await set_setting(key, str(val))
+    await state.clear()
+    await message.answer(f"✅ <b>{key}</b> = <b>{val}</b>", reply_markup=back_kb("admin_settings"))
+
+# =========================================================================
+# FIXED 60-SECOND AUTOMATIC BACKUP WORKER
+# =========================================================================
 async def backup_worker():
-    await asyncio.sleep(3)
+    await asyncio.sleep(5)
+    logger.info(f"Automatic Backup worker loop active ({BACKUP_INTERVAL_SECONDS}s)")
     while True:
         try:
             await asyncio.sleep(BACKUP_INTERVAL_SECONDS)
-            async with aiosqlite.connect(DB_PATH) as d:
-                await d.execute("PRAGMA wal_checkpoint(FULL)")
-                await d.commit()
-        except asyncio.CancelledError: break
+            if not os.path.exists(DB_PATH):
+                continue
+            
+            # WAL Checkpoint
+            try:
+                async with aiosqlite.connect(DB_PATH) as d:
+                    await d.execute("PRAGMA wal_checkpoint(FULL)")
+                    await d.commit()
+            except Exception as e:
+                logger.error(f"checkpoint: {e}")
+
+            # Send Auto Backup to Admin
+            last = backup_state.get("last_id")
+            if last:
+                try: await bot.delete_message(ADMIN_CHAT_ID, last)
+                except: pass
+            
+            try:
+                sent = await bot.send_document(
+                    ADMIN_CHAT_ID,
+                    FSInputFile(DB_PATH),
+                    caption=f"🔄 <b>AUTO BACKUP (60s)</b>\n🕒 {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())} UTC"
+                )
+                backup_state["last_id"] = sent.message_id
+            except Exception as e:
+                logger.error(f"backup send failed: {e}")
+
+        except asyncio.CancelledError:
+            break
         except Exception as e:
-            logger.error(f"backup loop: {e}")
+            logger.error(f"backup loop error: {e}")
             await asyncio.sleep(5)
 
+# =========================================================================
+# WEB SERVER FOR 24/7 RUNNING (RENDER PORT BINDING)
+# =========================================================================
 async def handle_ping(request):
     return web.Response(text="MovieVerse Bot is running 24/7!")
 
@@ -1624,20 +1865,22 @@ async def start_web_server():
         port = int(os.environ.get("PORT", 10000))
         site = web.TCPSite(runner, "0.0.0.0", port)
         await site.start()
+        logger.info(f"Web server active on port {port}")
     except Exception as e:
-        logger.error(f"Web server error: {e}")
+        logger.error(f"Web server failed: {e}")
 
 @router.message()
 async def fallback(message: Message):
     is_adm = await is_admin_user(message.from_user.id)
-    await message.answer("ℹ️ Use /start to see the main menu.", reply_markup=main_menu_kb(is_adm))
+    await message.answer("ℹ️ Use /start to open main menu.", reply_markup=main_menu_kb(is_adm))
 
 # =========================================================================
-# MAIN
+# MAIN EXECUTION
 # =========================================================================
 async def main():
     try:
         await init_db()
+
         dp.message.middleware(AntiSpamMiddleware())
         dp.callback_query.middleware(AntiSpamMiddleware())
         dp.message.middleware(ForceSubMiddleware())
@@ -1645,7 +1888,9 @@ async def main():
         dp.include_router(router)
 
         await register_commands()
-        asyncio.create_task(backup_worker())
+
+        global _backup_task
+        _backup_task = asyncio.create_task(backup_worker())
         asyncio.create_task(start_web_server())
 
         me = await bot.get_me()
@@ -1654,10 +1899,15 @@ async def main():
     except Exception:
         with open("crash.log", "w", encoding="utf-8") as f:
             traceback.print_exc(file=f)
+        logger.exception("Fatal Error")
         raise
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
-        pass
+        logger.info("Bot stopped.")
+    except BaseException:
+        with open("crash.log", "w", encoding="utf-8") as f:
+            traceback.print_exc(file=f)
+        raise
